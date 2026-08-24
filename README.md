@@ -173,6 +173,10 @@ Constraints that follow from the design, not from this image:
 - `TEST_MODE=true` runs the matrix and **skips the panel**, since you are there to read
   the log. Unset it to get the panel back.
 
+Once it is running, `docker exec <name> sni-check` answers the only question worth
+asking first — did this platform actually give you root and `CAP_NET_RAW`, and is the
+spoofer listening. It exits non-zero when it did not.
+
 ---
 
 ## Troubleshooting

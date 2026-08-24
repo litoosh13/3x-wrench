@@ -103,14 +103,26 @@ Already baked into the image: `XUI_IN_DOCKER`, `XUI_MAIN_FOLDER`,
 `CAP_NET_ADMIN` is optional — it unlocks the `active` injector. Without it `passive` is
 selected automatically, which is often faster anyway.
 
-Check a platform before debugging anything else:
+Check a platform before debugging anything else. The image ships `sni-check` for
+exactly this — run it in the started container:
 
 ```bash
-docker exec <name> capsh --print | head -n1
+docker exec <name> sni-check
 ```
 
-No `cap_net_raw` there means the platform stripped it and no tuning will help. Fall
-back to running the panel alone (`CONNECT` unset) with Xray's built-in `freedom`
+```
+root:      yes
+caps:      cap_chown,cap_dac_override,...,cap_net_raw,...+ep
+NET_RAW:   yes -> passive injector can run
+NET_ADMIN: no  -> passive is auto-selected, which is fine
+spoofer:   listening on 127.0.0.1:2020 -> point the VLESS outbound here
+
+OK: spoofing can work here.
+```
+
+It exits non-zero if anything is missing, so it also works as a healthcheck. A `NO` on
+the `root` or `NET_RAW` line means the platform stripped it and no tuning will help:
+fall back to running the panel alone (`CONNECT` unset) with Xray's built-in `freedom`
 fragmentation, which needs no capabilities.
 
 **Placement beats every setting.** The fake ClientHello is injected by whoever runs this

@@ -164,6 +164,33 @@ RUN set -eu; printf '%s' \
     | base64 -d > /usr/local/bin/entrypoint.sh; \
     chmod +x /usr/local/bin/entrypoint.sh
 
+# sni-check: run it inside a running container to find out whether the platform
+# really gave you root + CAP_NET_RAW, and whether the spoofer is listening:
+#   docker exec <name> sni-check
+RUN set -eu; printf '%s' \
+    IyEvYmluL3NoCiMgQ2FuIHRoaXMgY29udGFpbmVyIGFjdHVhbGx5IGluamVjdCBwYWNrZXRzPyBFeGl0cyBub24tem \
+    VybyBpZiBpdCBjYW5ub3QuCkNBUFM9IiQoY2Fwc2ggLS1wcmludCAyPi9kZXYvbnVsbCB8IHNlZCAtbiAncy9eQ3Vy \
+    cmVudDogLy9wJyB8IGhlYWQgLW4xKSIKUkM9MAoKaWYgWyAiJChpZCAtdSkiIC1lcSAwIF07IHRoZW4KICAgIGVjaG \
+    8gInJvb3Q6ICAgICAgeWVzIgplbHNlCiAgICBlY2hvICJyb290OiAgICAgIE5PICAtPiBzbmktc3Bvb2ZpbmcgcmVm \
+    dXNlcyB0byBzdGFydCBhcyBub24tcm9vdCIKICAgIFJDPTEKZmkKCmVjaG8gImNhcHM6ICAgICAgJHtDQVBTOi08Y2 \
+    Fwc2ggdW5hdmFpbGFibGU+fSIKCmNhc2UgIiRDQVBTIiBpbgogICAgKmNhcF9uZXRfcmF3KnwiPWVwIiopCiAgICAg \
+    ICAgZWNobyAiTkVUX1JBVzogICB5ZXMgLT4gcGFzc2l2ZSBpbmplY3RvciBjYW4gcnVuIiA7OwogICAgKikKICAgIC \
+    AgICBlY2hvICJORVRfUkFXOiAgIE5PICAtPiBubyBpbmplY3Rpb24gaXMgcG9zc2libGU7IHRoZSBwbGF0Zm9ybSBz \
+    dHJpcHBlZCBpdCIKICAgICAgICBSQz0xIDs7CmVzYWMKCmNhc2UgIiRDQVBTIiBpbgogICAgKmNhcF9uZXRfYWRtaW \
+    4qfCI9ZXAiKikKICAgICAgICBlY2hvICJORVRfQURNSU46IHllcyAtPiB0aGUgYWN0aXZlIGluamVjdG9yIGlzIGF2 \
+    YWlsYWJsZSB0b28iIDs7CiAgICAqKQogICAgICAgIGVjaG8gIk5FVF9BRE1JTjogbm8gIC0+IHBhc3NpdmUgaXMgYX \
+    V0by1zZWxlY3RlZCwgd2hpY2ggaXMgZmluZSIgOzsKZXNhYwoKUD0iJHtTUE9PRl9QT1JUOi0yMDIwfSIKWyAtbiAi \
+    JHtQT1JUOi19IiBdICYmIFA9IiR7UE9SVH0iClsgLW4gIiR7TElTVEVOOi19IiBdICYmIFA9IiR7TElTVEVOIyMqOn \
+    0iCgppZiBbIC16ICIke0NPTk5FQ1Q6LX0iIF07IHRoZW4KICAgIGVjaG8gInNwb29mZXI6ICAgbm90IGNvbmZpZ3Vy \
+    ZWQgKENPTk5FQ1QgdW5zZXQpIC0+IHBhbmVsIG9ubHkiCmVsaWYgbmMgLXogMTI3LjAuMC4xICIkUCIgMj4vZGV2L2 \
+    51bGw7IHRoZW4KICAgIGVjaG8gInNwb29mZXI6ICAgbGlzdGVuaW5nIG9uIDEyNy4wLjAuMTokUCAtPiBwb2ludCB0 \
+    aGUgVkxFU1Mgb3V0Ym91bmQgaGVyZSIKZWxzZQogICAgZWNobyAic3Bvb2ZlcjogICBOT1QgbGlzdGVuaW5nIG9uID \
+    EyNy4wLjAuMTokUCAtPiByZWFkIHRoZSBjb250YWluZXIgbG9nIgogICAgUkM9MQpmaQoKWyAiJFJDIiAtZXEgMCBd \
+    ICYmIGVjaG8gIiIgJiYgZWNobyAiT0s6IHNwb29maW5nIGNhbiB3b3JrIGhlcmUuIgpbICIkUkMiIC1uZSAwIF0gJi \
+    YgZWNobyAiIiAmJiBlY2hvICJCUk9LRU46IHNlZSB0aGUgTk8vTk9UIGxpbmVzIGFib3ZlLiIKZXhpdCAiJFJDIgo= \
+    | base64 -d > /usr/local/bin/sni-check; \
+    chmod +x /usr/local/bin/sni-check
+
 ENV XUI_IN_DOCKER="true" \
     XUI_MAIN_FOLDER="/app" \
     XUI_ENABLE_FAIL2BAN="false" \
