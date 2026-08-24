@@ -170,7 +170,22 @@ volumes:
 
 ## Wiring the panel
 
-Add a VLESS **outbound** pointing at `127.0.0.1:2020`, then route your inbounds to it:
+The spoofer is **not** a SOCKS or HTTP proxy. It is a dumb TCP relay with one
+hardcoded destination: everything you send to `127.0.0.1:2020` comes out at `CONNECT`,
+with a decoy ClientHello injected first. A `socks` or `http` outbound will not work —
+those speak a handshake it does not understand.
+
+So the outbound is **your foreign server's client config**, with the address pointed at
+the relay instead of the real IP. Three pieces:
+
+### 1. Inbound
+
+Make it in the panel UI as normal — VLESS on 8443, say, for your own devices. Note the
+tag 3x-ui gives it (something like `inbound-8443`).
+
+### 2. Outbound
+
+Xray Configs -> `outbounds`:
 
 ```json
 {
@@ -180,7 +195,7 @@ Add a VLESS **outbound** pointing at `127.0.0.1:2020`, then route your inbounds 
     "vnext": [{
       "address": "127.0.0.1",
       "port": 2020,
-      "users": [{ "id": "YOUR-UUID", "encryption": "none", "flow": "xtls-rprx-vision" }]
+      "users": [{ "id": "SERVER-UUID", "encryption": "none", "flow": "xtls-rprx-vision" }]
     }]
   },
   "streamSettings": {
@@ -191,9 +206,30 @@ Add a VLESS **outbound** pointing at `127.0.0.1:2020`, then route your inbounds 
 }
 ```
 
-`serverName` must be the real hostname of the foreign server, **not** the loopback
-address — Xray otherwise derives the SNI from the dial address and the handshake dies.
-The real SNI stays in the real ClientHello; the decoy is only what the DPI sees first.
+Protocol, `SERVER-UUID`, `flow` and `serverName` all come from the **foreign server**,
+not from the inbound above — different UUIDs, one for your phone and one for the remote
+server. Only `address` and `port` change, to the relay.
+
+`serverName` must be the real hostname, **not** the loopback address: Xray otherwise
+derives the SNI from the dial address and the handshake dies. The real SNI stays in the
+real ClientHello; the decoy is only what the DPI sees first.
+
+Reality instead of TLS? Swap `tlsSettings` for `"security": "reality"` plus
+`realitySettings` with `serverName`, `publicKey`, `shortId`, `fingerprint`.
+
+### 3. Routing rule
+
+Xray Configs -> `routing.rules`:
+
+```json
+{ "type": "field", "inboundTag": ["inbound-8443"], "outboundTag": "spoof" }
+```
+
+Restart Xray. The flow is then:
+
+```
+your phone -> inbound 8443 -> rule -> outbound -> 127.0.0.1:2020 -> spoofer -> foreign server
+```
 
 ## Limits
 
