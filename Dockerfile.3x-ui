@@ -1,0 +1,177 @@
+# ===========================================================================
+# 3x-ui panel + SNI-Spoofing-Go in ONE image.
+#
+# Why one image: PaaS providers that build from a Dockerfile give you a single
+# container, and you only get ports/volumes/env AFTER the build. Two containers
+# cannot share 127.0.0.1, so the spoofer has to live next to the panel's Xray.
+#
+#   sni-spoofing  ->  127.0.0.1:2020  (loopback only; never exposed)
+#   3x-ui panel   ->  0.0.0.0:2053    (map this one in the provider's panel)
+#
+# In the panel, point a VLESS *outbound* at 127.0.0.1:2020 and its whole TLS
+# handshake goes out behind a decoy ClientHello. See README.md.
+#
+#   CONNECT=203.0.113.10:443  FAKE_SNI=hcaptcha.com  UTLS=firefox
+#
+# Leave CONNECT unset and you get a plain 3x-ui panel with no spoofing.
+#
+# Same three deliberate omissions as Dockerfile -- do not "modernise" them:
+#   * no `# syntax=` line  -> never pulls the docker/dockerfile frontend image
+#   * no heredoc           -> works on old builders and behind registry mirrors
+#   * no Go/npm build      -> never contacts proxy.golang.org or npm (403 in Iran);
+#                             both binaries come from GitHub releases
+#
+#   https://github.com/aleskxyz/SNI-Spoofing-Go  (GPL-3.0)
+#   https://github.com/MHSanaei/3x-ui            (GPL-3.0)
+# ===========================================================================
+
+# --------------------------- download stage -------------------------------
+FROM debian:bookworm-slim AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl && rm -rf /var/lib/apt/lists/*
+
+# REF=latest -> newest release of each project. Pin with --build-arg.
+ARG REF=latest
+ARG XUI_REF=latest
+ARG TARGETARCH
+ARG TARGETVARIANT
+
+# No `#` comments inside the RUN below: Docker joins continuation lines into a
+# single shell line, so a comment would swallow everything after it. Note the
+# armv7 rename -- the panel maps GOARCH=arm to "arm32" (internal/xray/process.go),
+# so without it the panel cannot find the Xray binary it just shipped.
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}${TARGETVARIANT:-}" in \
+      amd64)  ARCH=amd64 ;; \
+      arm64)  ARCH=arm64 ;; \
+      armv7)  ARCH=armv7 ;; \
+      *) echo "unsupported arch: ${TARGETARCH:-}${TARGETVARIANT:-}" >&2; exit 1 ;; \
+    esac; \
+    if [ "$REF" = "latest" ]; then \
+      SNI_URL="https://github.com/aleskxyz/SNI-Spoofing-Go/releases/latest/download/sni-spoofing-linux-${ARCH}"; \
+    else \
+      SNI_URL="https://github.com/aleskxyz/SNI-Spoofing-Go/releases/download/${REF}/sni-spoofing-linux-${ARCH}"; \
+    fi; \
+    if [ "$XUI_REF" = "latest" ]; then \
+      XUI_URL="https://github.com/MHSanaei/3x-ui/releases/latest/download/x-ui-linux-${ARCH}.tar.gz"; \
+    else \
+      XUI_URL="https://github.com/MHSanaei/3x-ui/releases/download/${XUI_REF}/x-ui-linux-${ARCH}.tar.gz"; \
+    fi; \
+    mkdir -p /out /app; \
+    echo "downloading ${SNI_URL}"; \
+    curl -fL --retry 3 -o /out/sni-spoofing "$SNI_URL"; \
+    chmod +x /out/sni-spoofing; \
+    echo "downloading ${XUI_URL}"; \
+    curl -fL --retry 3 -o /tmp/x-ui.tar.gz "$XUI_URL"; \
+    tar -xzf /tmp/x-ui.tar.gz -C /app --strip-components=1; \
+    rm -f /tmp/x-ui.tar.gz; \
+    chmod +x /app/x-ui /app/bin/xray-linux-* /app/bin/mtg-linux-* 2>/dev/null || true; \
+    if [ "$ARCH" = "armv7" ]; then \
+      mv /app/bin/xray-linux-armv7 /app/bin/xray-linux-arm32; \
+      chmod +x /app/bin/xray-linux-arm32; \
+    fi; \
+    test -s /app/x-ui
+
+# ---------------------------- runtime stage -------------------------------
+FROM debian:bookworm-slim
+
+# iptables AND iproute2 are both needed by the "active" (nfqueue) injector:
+# it runs `ip route get` / `ip rule`. The second line is the network-debugging
+# toolbox: ping, nslookup/dig, nc, traceroute, netstat/ifconfig, tcpdump.
+# The third is what the panel itself wants: certs, timezone, openssl for the
+# SSL menu, bash+cron for acme.sh renewals.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates iptables iproute2 libcap2-bin tini \
+        iputils-ping dnsutils netcat-openbsd traceroute net-tools tcpdump \
+        procps curl wget nano vim-tiny less \
+        tzdata openssl bash cron \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /out/sni-spoofing /usr/local/bin/sni-spoofing
+COPY --from=build /app/ /app/
+
+# The panel resolves its Xray binary as "bin/xray-linux-*" relative to the
+# working directory, so WORKDIR must be /app. The DB lives in /etc/x-ui.
+RUN mkdir -p /data /etc/x-ui /var/log/x-ui
+WORKDIR /app
+
+# entrypoint.sh, base64-encoded so this Dockerfile needs no heredoc support
+# and no external frontend. Decode it to read/edit:
+#   docker run --rm --entrypoint sh IMAGE -c 'cat /usr/local/bin/entrypoint.sh'
+RUN set -eu; printf '%s' \
+    IyEvYmluL3NoCiMgM3gtdWkgcGFuZWwgKyBzbmktc3Bvb2ZpbmcgaW4gb25lIGNvbnRhaW5lci4KIwojICAgc25pLX \
+    Nwb29maW5nICAtPiAgc3RhcnRzIG9ubHkgd2hlbiBDT05ORUNUIGlzIHNldCwgaW4gdGhlIGJhY2tncm91bmQsCiMg \
+    ICAgICAgICAgICAgICAgICAgICBsaXN0ZW5pbmcgb24gMTI3LjAuMC4xOjIwMjAgYnkgZGVmYXVsdCBzbyB0aGUgcG \
+    FuZWwncwojICAgICAgICAgICAgICAgICAgICAgWHJheSBjYW4gdXNlIGl0IGFzIGEgVkxFU1Mgb3V0Ym91bmQgdGFy \
+    Z2V0LgojICAgeC11aSBwYW5lbCAgICAtPiAgYWx3YXlzIHJ1bnMsIGluIHRoZSBmb3JlZ3JvdW5kIChpdCBpcyBQSU \
+    QgMSdzIGNoaWxkKS4Kc2V0IC1ldQoKbG9nKCkgeyBwcmludGYgJ1tlbnRyeXBvaW50XSAlc1xuJyAiJCoiID4mMjsg \
+    fQoKIyAtLS0gb3ZlcnJpZGUgaG9vazogeW91ciBvd24gc2NyaXB0IG9uIHRoZSB2b2x1bWUgd2lucyAtLS0tLS0tLS \
+    0tLS0tLS0tLS0tLS0tLQppZiBbIC1mIC9kYXRhL2VudHJ5cG9pbnQuc2ggXSAmJiBbICIke1VTRV9WT0xVTUVfRU5U \
+    UllQT0lOVDotdHJ1ZX0iID0gInRydWUiIF07IHRoZW4KICAgIGxvZyAicnVubmluZyAvZGF0YS9lbnRyeXBvaW50Ln \
+    NoIGZyb20gdGhlIHZvbHVtZSIKICAgIGV4ZWMgL2Jpbi9zaCAvZGF0YS9lbnRyeXBvaW50LnNoICIkQCIKZmkKCiMg \
+    LS0tIHNoZWxsIHBhc3MtdGhyb3VnaCBmb3IgYGRvY2tlciBleGVjYCAvIGRlYnVnZ2luZyAtLS0tLS0tLS0tLS0tLS \
+    0tLS0tLS0tLS0KaWYgWyAiJCMiIC1ndCAwIF07IHRoZW4KICAgIGNhc2UgIiQxIiBpbgogICAgICAgIHNofGJhc2h8 \
+    L2Jpbi9zaHwvYmluL2Jhc2gpIGV4ZWMgIiRAIiA7OwogICAgZXNhYwogICAgZXhlYyAiJEAiCmZpCgppZiBbICIkKG \
+    lkIC11KSIgLW5lIDAgXTsgdGhlbgogICAgbG9nICJFUlJPUjogbm90IHJvb3QgaW5zaWRlIHRoZSBjb250YWluZXI7 \
+    IHNuaS1zcG9vZmluZyBuZWVkcyByb290LiIKICAgIGV4aXQgMQpmaQoKIyAtLS0gc25pLXNwb29maW5nIC0tLS0tLS \
+    0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQppZiBbIC1uICIke0NP \
+    Tk5FQ1Q6LX0iIF07IHRoZW4KICAgIEhBVkVfTkVUX0FETUlOPXVua25vd24KICAgIGlmIGNvbW1hbmQgLXYgY2Fwc2 \
+    ggPi9kZXYvbnVsbCAyPiYxOyB0aGVuCiAgICAgICAgQ0FQUz0iJChjYXBzaCAtLXByaW50IDI+L2Rldi9udWxsIHwg \
+    c2VkIC1uICdzL15DdXJyZW50OiAvL3AnIHwgaGVhZCAtbjEpIgogICAgICAgIGxvZyAiY2FwYWJpbGl0aWVzOiAke0 \
+    NBUFM6LXVua25vd259IgogICAgICAgIGNhc2UgIiRDQVBTIiBpbgogICAgICAgICAgICAqY2FwX25ldF9hZG1pbip8 \
+    Ij1lcCIqKSBIQVZFX05FVF9BRE1JTj15ZXMgOzsKICAgICAgICAgICAgKikgSEFWRV9ORVRfQURNSU49bm8gOzsKIC \
+    AgICAgICBlc2FjCiAgICAgICAgY2FzZSAiJENBUFMiIGluCiAgICAgICAgICAgICpjYXBfbmV0X3Jhdyp8Ij1lcCIq \
+    KSA7OwogICAgICAgICAgICAqKSBsb2cgIldBUk5JTkc6IGNhcF9uZXRfcmF3IG1pc3NpbmcgLT4gbm8gcGFja2V0IG \
+    luamVjdGlvbiBpcyBwb3NzaWJsZSBhdCBhbGwuIiA7OwogICAgICAgIGVzYWMKICAgIGZpCiAgICBpZiBbIC16ICIk \
+    e0lOSkVDVE9SOi19IiBdICYmIFsgIiRIQVZFX05FVF9BRE1JTiIgPSAibm8iIF07IHRoZW4KICAgICAgICBJTkpFQ1 \
+    RPUj1wYXNzaXZlCiAgICAgICAgbG9nICJjYXBfbmV0X2FkbWluIG1pc3NpbmcgLT4gYXV0by1zZWxlY3RpbmcgSU5K \
+    RUNUT1I9cGFzc2l2ZSAoc2V0IElOSkVDVE9SPWFjdGl2ZSB0byBmb3JjZSkuIgogICAgZWxpZiBbICIke0lOSkVDVE \
+    9SOi19IiA9ICJhY3RpdmUiIF0gJiYgWyAiJEhBVkVfTkVUX0FETUlOIiA9ICJubyIgXTsgdGhlbgogICAgICAgIGxv \
+    ZyAiV0FSTklORzogSU5KRUNUT1I9YWN0aXZlIGJ1dCBjYXBfbmV0X2FkbWluIGlzIG1pc3Npbmc7IHRoaXMgd2lsbC \
+    BmYWlsLiBUcnkgSU5KRUNUT1I9cGFzc2l2ZS4iCiAgICBmaQoKICAgIHNldCAtLQogICAgaWYgWyAtbiAiJHtMSVNU \
+    RU46LX0iIF07IHRoZW4KICAgICAgICBzZXQgLS0gIiRAIiAtbGlzdGVuICIkTElTVEVOIgogICAgZWxpZiBbIC1uIC \
+    Ike1BPUlQ6LX0iIF07IHRoZW4KICAgICAgICBzZXQgLS0gIiRAIiAtbGlzdGVuICIwLjAuMC4wOiR7UE9SVH0iCiAg \
+    ICBlbHNlCiAgICAgICAgIyBTYW1lIGNvbnRhaW5lciBhcyBYcmF5LCBzbyBsb29wYmFjayBpcyBib3RoIHJlYWNoYW \
+    JsZSBhbmQgdW5leHBvc2VkLgogICAgICAgIHNldCAtLSAiJEAiIC1saXN0ZW4gIjEyNy4wLjAuMToke1NQT09GX1BP \
+    UlQ6LTIwMjB9IgogICAgZmkKICAgIHNldCAtLSAiJEAiIC1jb25uZWN0ICIkQ09OTkVDVCIKCiAgICBbIC1uICIke0 \
+    ZBS0VfU05JOi19IiBdICAgICAgICAmJiBzZXQgLS0gIiRAIiAtZmFrZS1zbmkgIiRGQUtFX1NOSSIKICAgIFsgLW4g \
+    IiR7VVRMUzotfSIgXSAgICAgICAgICAgICYmIHNldCAtLSAiJEAiIC11dGxzICIkVVRMUyIKICAgIFsgLW4gIiR7SU \
+    5KRUNUT1I6LX0iIF0gICAgICAgICYmIHNldCAtLSAiJEAiIC1pbmplY3RvciAiJElOSkVDVE9SIgogICAgWyAtbiAi \
+    JHtGQUtFX1JFUEVBVDotfSIgXSAgICAgJiYgc2V0IC0tICIkQCIgLWZha2UtcmVwZWF0ICIkRkFLRV9SRVBFQVQiCi \
+    AgICBbIC1uICIke0ZBS0VfREVMQVk6LX0iIF0gICAgICAmJiBzZXQgLS0gIiRAIiAtZmFrZS1kZWxheSAiJEZBS0Vf \
+    REVMQVkiCiAgICBbIC1uICIke0FDS19USU1FT1VUOi19IiBdICAgICAmJiBzZXQgLS0gIiRAIiAtYWNrLXRpbWVvdX \
+    QgIiRBQ0tfVElNRU9VVCIKICAgIFsgLW4gIiR7RlJBR01FTlRfREVMQVk6LX0iIF0gICYmIHNldCAtLSAiJEAiIC1m \
+    cmFnbWVudC1kZWxheSAiJEZSQUdNRU5UX0RFTEFZIgogICAgWyAtbiAiJHtTTklfQ0hVTks6LX0iIF0gICAgICAgJi \
+    Ygc2V0IC0tICIkQCIgLXNuaS1jaHVuayAiJFNOSV9DSFVOSyIKICAgICMgR28gYm9vbCBmbGFncyBuZWVkIHRoZSA9 \
+    dmFsdWUgZm9ybTsgIi1lbmFibGUtZnJhZ21lbnQgdHJ1ZSIgd291bGQgbm90IHdvcmsuCiAgICBbIC1uICIke0VOQU \
+    JMRV9GUkFHTUVOVDotfSIgXSAmJiBzZXQgLS0gIiRAIiAiLWVuYWJsZS1mcmFnbWVudD0ke0VOQUJMRV9GUkFHTUVO \
+    VH0iCgogICAgIyBURVNUX01PREUgcHJpbnRzIHRoZSBmaW5nZXJwcmludC9mcmFnbWVudCBtYXRyaXggYW5kIGV4aX \
+    RzLiBSdW4gaXQgaW4gdGhlCiAgICAjIGZvcmVncm91bmQgYW5kIHNraXAgdGhlIHBhbmVsIGVudGlyZWx5IC0tIHlv \
+    dSBhcmUgaGVyZSB0byByZWFkIHRoZSBsb2cuCiAgICBpZiBbICIke1RFU1RfTU9ERTotZmFsc2V9IiA9ICJ0cnVlIi \
+    BdOyB0aGVuCiAgICAgICAgbG9nICJURVNUX01PREU6IHJ1bm5pbmcgdGhlIG1hdHJpeCBpbnN0ZWFkIG9mIHRoZSBw \
+    YW5lbCIKICAgICAgICAjIHNoZWxsY2hlY2sgZGlzYWJsZT1TQzIwODYKICAgICAgICBleGVjIC91c3IvbG9jYWwvYm \
+    luL3NuaS1zcG9vZmluZyAiJEAiIC10ZXN0ICR7RVhUUkFfQVJHUzotfQogICAgZmkKCiAgICBsb2cgInNuaS1zcG9v \
+    ZmluZyAkKiAke0VYVFJBX0FSR1M6LX0iCiAgICAjIFJlc3RhcnRlZCBvbiBleGl0IHNvIGEgY3Jhc2hlZCBzcG9vZm \
+    VyIGRvZXMgbm90IHNpbGVudGx5IGJsYWNrLWhvbGUgZXZlcnkKICAgICMgb3V0Ym91bmQgd2hpbGUgdGhlIHBhbmVs \
+    IGtlZXBzIGhhcHBpbHkgc2VydmluZy4KICAgICMgc2hlbGxjaGVjayBkaXNhYmxlPVNDMjA4NgogICAgeyB3aGlsZS \
+    A6OyBkbwogICAgICAgIC91c3IvbG9jYWwvYmluL3NuaS1zcG9vZmluZyAiJEAiICR7RVhUUkFfQVJHUzotfSB8fCBs \
+    b2cgInNuaS1zcG9vZmluZyBleGl0ZWQgKCQ/KSwgcmVzdGFydGluZyBpbiAycyIKICAgICAgICBzbGVlcCAyCiAgIC \
+    AgIGRvbmU7IH0gJgplbHNlCiAgICBsb2cgIkNPTk5FQ1QgdW5zZXQgLT4gcGFuZWwgb25seSwgbm8gU05JIHNwb29m \
+    aW5nLiIKZmkKCiMgLS0tIDN4LXVpIHBhbmVsIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS \
+    0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KY2QgL2FwcApsb2cgInN0YXJ0aW5nIDN4LXVpIHBhbmVsIgpleGVjIC9hcHAv \
+    eC11aQo= \
+    | base64 -d > /usr/local/bin/entrypoint.sh; \
+    chmod +x /usr/local/bin/entrypoint.sh
+
+ENV XUI_IN_DOCKER="true" \
+    XUI_MAIN_FOLDER="/app" \
+    XUI_ENABLE_FAIL2BAN="false" \
+    XRAY_VMESS_AEAD_FORCED="false"
+
+# Nothing else gets an ENV default on purpose: an unset variable = the
+# binary's own default. Set what you need in your provider's env panel.
+EXPOSE 2053
+VOLUME ["/etc/x-ui"]
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]

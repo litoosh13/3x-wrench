@@ -1,0 +1,54 @@
+name: image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # arm64 is built under QEMU. Slow, but the image only downloads release
+      # binaries -- there is no cross-compilation to go wrong.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=sha,format=short
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.3x-ui
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # No build cache on purpose: the image pulls the *latest* 3x-ui and
+          # sni-spoofing releases, and a cached layer would pin them forever --
+          # "latest" would quietly stop meaning latest. The build is downloads,
+          # not compilation, so re-running it costs a couple of minutes.
+          #
+          # provenance:false keeps the manifest list to real platforms. The
+          # attestation entries it adds otherwise show up as unknown/unknown
+          # and some registries and clusters refuse to pull such an index.
+          provenance: false

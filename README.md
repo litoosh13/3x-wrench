@@ -129,6 +129,52 @@ Only `/data` survives a redeploy. Changes anywhere else in the container are los
 
 ---
 
+## Bundled with the 3x-ui panel (`Dockerfile.3x-ui`)
+
+> Deploying the prebuilt image rather than building it? Everything you need — env vars,
+> the volume path, which ports to publish — is in **[DEPLOY.md](DEPLOY.md)**.
+
+
+Two containers cannot share `127.0.0.1`, and a provider that only builds a Dockerfile
+gives you exactly one. So [`Dockerfile.3x-ui`](Dockerfile.3x-ui) puts both in one image:
+
+| | Listens on | Exposed? |
+|---|---|---|
+| `sni-spoofing` | `127.0.0.1:2020` | no — loopback only |
+| 3x-ui panel | `0.0.0.0:2053` | yes — map this port |
+
+Build it exactly like `Dockerfile` (paste it into the provider's form if it insists on
+that name), then set the same `CONNECT` / `FAKE_SNI` / `UTLS` variables. Extra ones:
+
+| Name | Notes |
+|------|-------|
+| `SPOOF_PORT` | Loopback port for the spoofer. Default `2020` |
+| `XUI_PORT` | Panel port. Default `2053` |
+| `XUI_ENABLE_FAIL2BAN` | `false` here (no fail2ban package). Set `true` only if you add it |
+
+`LISTEN` and `PORT` still work and still win over `SPOOF_PORT` — use them only if you
+deliberately want the relay reachable from outside, which is a bad idea in this image.
+**Leave `CONNECT` unset and you get a plain panel with no spoofing**, which is the easy
+way to check the panel half before debugging the spoof half.
+
+Mount the volume at **`/etc/x-ui`** (the panel database). Nothing else is stateful.
+
+In the panel, add a VLESS **outbound** pointing at `127.0.0.1:2020` and route your
+inbounds to it. The one line people get wrong: `serverName` must be the real hostname
+of the foreign server, not the loopback address — Xray otherwise derives SNI from the
+dial address and the handshake dies. The real SNI stays in the real ClientHello; the
+decoy is only what the DPI sees first.
+
+Constraints that follow from the design, not from this image:
+
+- One upstream per spoofer. A second server needs a second `SPOOF_PORT`, which this
+  image does not do — run a second container for it.
+- **TCP only.** No QUIC, no XHTTP-over-UDP, no Hysteria through this path.
+- `TEST_MODE=true` runs the matrix and **skips the panel**, since you are there to read
+  the log. Unset it to get the panel back.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
