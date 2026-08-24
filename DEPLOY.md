@@ -38,7 +38,61 @@ Know what you are getting before you switch:
   work, and what is left is the Xray protocols that plain 3x-ui already gives you.
 - The panel port lives in the database, not an env var. Change it in the panel UI.
 
-Both images are published from every build, so trying it costs nothing.
+Both images are published from every build.
+
+#### Running vpn-ui on your own VPS
+
+This is where it belongs — a host you control, with a full kernel. Not a managed
+container platform.
+
+**1. Load the modules on the host** (Hetzner's Debian/Ubuntu images ship the generic
+kernel, so they are all present):
+
+```bash
+sudo modprobe l2tp_ppp ppp_mppe nf_conntrack_pptp ip_gre tun nf_tproxy_ipv4
+printf 'l2tp_ppp\nppp_mppe\nnf_conntrack_pptp\nip_gre\ntun\nnf_tproxy_ipv4\n' \
+  | sudo tee /etc/modules-load.d/vpn-ui.conf
+```
+
+Do this **first**. The panel installs a kernel package only when the modules are
+missing, so loading them up front is what stops it.
+
+**2. Run it:**
+
+```bash
+docker run -d --name vpn-ui \
+  --network host \
+  --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_MODULE \
+  --device /dev/net/tun \
+  -v /lib/modules:/lib/modules:ro \
+  -v vpnui-data:/etc/vpn-ui \
+  --restart unless-stopped \
+  ghcr.io/litoosh13/vpnui-spoof:latest
+```
+
+Every flag earns its place:
+
+| Flag | Why |
+|---|---|
+| `--network host` | L2TP/IPsec is ESP (protocol 50) and GRE is 47. Docker's NAT does not forward raw IP protocols, only TCP/UDP ports |
+| `NET_ADMIN` | Interfaces, routes, iptables |
+| `SYS_MODULE` + `/lib/modules` | So the panel can load a module instead of installing a kernel |
+| `/dev/net/tun` | OpenVPN and WireGuard |
+
+Leave `CONNECT` unset unless you also want the spoofer — the panel runs alone without it.
+
+Two things upstream does not test and neither have I:
+
+- The panel installs its daemons (xl2tpd, strongSwan, pptpd, openvpn, ocserv, accel-ppp)
+  at provision time with apt. They land in the container's writable layer, so
+  **recreating the container re-provisions from scratch**. Recreate rarely, or commit
+  the provisioned container to an image.
+- Some of those daemons expect systemd. If provisioning fails on one, try
+  `--privileged` before assuming the protocol cannot work.
+
+If this fights you, install it on the host the way upstream intends —
+`curl -Ls .../deploy.sh | sudo bash`. It is a host installer, and on your own VPS there
+is nothing a container buys you.
 
 Both bundled binaries track their upstream **latest release at build time**. There is
 no build cache in CI on purpose, so re-running the workflow really does pick up new

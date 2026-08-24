@@ -67,11 +67,13 @@ FROM debian:bookworm-slim
 # Debian 12 is one of the distributions upstream tests on, which is why this
 # image is not Alpine. iptables/iproute2 are for the active injector; the
 # second line is the debugging toolbox; the third is what the panel wants.
+# kmod is there for modprobe: without it the panel cannot load a kernel module
+# even on a host that has them, and it falls back to installing a kernel.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates iptables iproute2 libcap2-bin tini \
         iputils-ping dnsutils netcat-openbsd traceroute net-tools tcpdump \
         procps curl wget nano vim-tiny less \
-        tzdata openssl bash cron \
+        tzdata openssl bash cron kmod \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /out/sni-spoofing /usr/local/bin/sni-spoofing
