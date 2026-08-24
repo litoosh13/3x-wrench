@@ -17,6 +17,29 @@ Public image, so no login or pull secret is needed anywhere.
 | `v1.2.3` | Built from that git tag |
 | `sha-abc1234` | One specific commit — pin this if you want reproducible deploys |
 
+### The vpn-ui variant
+
+```
+ghcr.io/litoosh13/vpnui-spoof:latest
+```
+
+Same image with [Sir-MmD/vpn-ui](https://github.com/Sir-MmD/vpn-ui) in place of 3x-ui —
+a 3x-ui fork that adds L2TP, PPTP, OpenVPN, OpenConnect, SSTP, IKEv2, WireGuard and
+AmneziaWG. **amd64 only**, panel on **2083**, volume at **`/etc/vpn-ui`**. Everything
+else on this page applies unchanged.
+
+Know what you are getting before you switch:
+
+- Upstream ships **no container support** — it installs onto a host with `deploy.sh`,
+  systemd units and kernel modules. This image runs the binary directly, which upstream
+  never tests.
+- Its headline protocols need `CAP_NET_ADMIN`, `/dev/net/tun` and kernel modules. On a
+  platform that grants only `NET_RAW` — run `sni-check` to find out — none of them can
+  work, and what is left is the Xray protocols that plain 3x-ui already gives you.
+- The panel port lives in the database, not an env var. Change it in the panel UI.
+
+Both images are published from every build, so trying it costs nothing.
+
 Both bundled binaries track their upstream **latest release at build time**. There is
 no build cache in CI on purpose, so re-running the workflow really does pick up new
 3x-ui and sni-spoofing versions. Pin them instead with `--build-arg XUI_REF=v2.8.0` /

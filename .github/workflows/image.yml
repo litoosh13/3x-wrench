@@ -12,10 +12,21 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: xui-spoof
+            file: Dockerfile.3x-ui
+            platforms: linux/amd64,linux/arm64
+          # vpn-ui publishes an amd64 binary only.
+          - image: vpnui-spoof
+            file: Dockerfile.vpn-ui
+            platforms: linux/amd64
     steps:
       - uses: actions/checkout@v4
 
-      # arm64 is built under QEMU. Slow, but the image only downloads release
+      # arm64 is built under QEMU. Slow, but the images only download release
       # binaries -- there is no cross-compilation to go wrong.
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -29,7 +40,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
@@ -38,12 +49,12 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.3x-ui
-          platforms: linux/amd64,linux/arm64
+          file: ${{ matrix.file }}
+          platforms: ${{ matrix.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # No build cache on purpose: the image pulls the *latest* 3x-ui and
+          # No build cache on purpose: the images pull the *latest* panel and
           # sni-spoofing releases, and a cached layer would pin them forever --
           # "latest" would quietly stop meaning latest. The build is downloads,
           # not compilation, so re-running it costs a couple of minutes.
