@@ -17,33 +17,31 @@ Public image, so no login or pull secret is needed anywhere.
 | `v1.2.3` | Built from that git tag |
 | `sha-abc1234` | One specific commit — pin this if you want reproducible deploys |
 
-### The vpn-ui variant
+### The vpn-ui image
 
 ```
-ghcr.io/litoosh13/vpnui-spoof:latest
+ghcr.io/litoosh13/vpn-ui:latest
 ```
 
-Same image with [Sir-MmD/vpn-ui](https://github.com/Sir-MmD/vpn-ui) in place of 3x-ui —
-a 3x-ui fork that adds L2TP, PPTP, OpenVPN, OpenConnect, SSTP, IKEv2, WireGuard and
-AmneziaWG. **amd64 only**, panel on **2083**, volume at **`/etc/vpn-ui`**. Everything
-else on this page applies unchanged.
+[Sir-MmD/vpn-ui](https://github.com/Sir-MmD/vpn-ui) on its own — no spoofer, a separate
+image from `xui-spoof`. A 3x-ui fork that adds L2TP, PPTP, OpenVPN, OpenConnect, SSTP,
+IKEv2, WireGuard and AmneziaWG. **amd64 only**, panel on **2083**, volume at
+**`/etc/vpn-ui`**. Nothing else on this page applies to it — the env vars below are the
+spoofer's.
 
-Know what you are getting before you switch:
+Know what you are getting:
 
 - Upstream ships **no container support** — it installs onto a host with `deploy.sh`,
   systemd units and kernel modules. This image runs the binary directly, which upstream
   never tests.
 - Its headline protocols need `CAP_NET_ADMIN`, `/dev/net/tun` and kernel modules. On a
-  platform that grants only `NET_RAW` — run `sni-check` to find out — none of them can
-  work, and what is left is the Xray protocols that plain 3x-ui already gives you.
+  managed platform that grants only `NET_RAW`, none of them can work, and what is left
+  is the Xray protocols that plain 3x-ui already gives you.
 - The panel port lives in the database, not an env var. Change it in the panel UI.
 
-Both images are published from every build.
+#### Running it on your own VPS
 
-#### Running vpn-ui on your own VPS
-
-This is where it belongs — a host you control, with a full kernel. Not a managed
-container platform.
+This is where it belongs — a host you control, with a full kernel.
 
 **1. Load the modules on the host** (Hetzner's Debian/Ubuntu images ship the generic
 kernel, so they are all present):
@@ -67,7 +65,7 @@ docker run -d --name vpn-ui \
   -v /lib/modules:/lib/modules:ro \
   -v vpnui-data:/etc/vpn-ui \
   --restart unless-stopped \
-  ghcr.io/litoosh13/vpnui-spoof:latest
+  ghcr.io/litoosh13/vpn-ui:latest
 ```
 
 Every flag earns its place:
@@ -79,7 +77,12 @@ Every flag earns its place:
 | `SYS_MODULE` + `/lib/modules` | So the panel can load a module instead of installing a kernel |
 | `/dev/net/tun` | OpenVPN and WireGuard |
 
-Leave `CONNECT` unset unless you also want the spoofer — the panel runs alone without it.
+Check what you actually got before blaming the panel:
+
+```bash
+docker exec vpn-ui capsh --print | head -n1
+docker exec vpn-ui sh -c 'ls -l /dev/net/tun; lsmod | grep -c ppp'
+```
 
 Two things upstream does not test and neither have I:
 
@@ -93,11 +96,6 @@ Two things upstream does not test and neither have I:
 If this fights you, install it on the host the way upstream intends —
 `curl -Ls .../deploy.sh | sudo bash`. It is a host installer, and on your own VPS there
 is nothing a container buys you.
-
-Both bundled binaries track their upstream **latest release at build time**. There is
-no build cache in CI on purpose, so re-running the workflow really does pick up new
-3x-ui and sni-spoofing versions. Pin them instead with `--build-arg XUI_REF=v2.8.0` /
-`REF=v1.0.0` if you build it yourself.
 
 ---
 

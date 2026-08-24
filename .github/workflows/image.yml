@@ -20,7 +20,7 @@ jobs:
             file: Dockerfile.3x-ui
             platforms: linux/amd64,linux/arm64
           # vpn-ui publishes an amd64 binary only.
-          - image: vpnui-spoof
+          - image: vpn-ui
             file: Dockerfile.vpn-ui
             platforms: linux/amd64
     steps:

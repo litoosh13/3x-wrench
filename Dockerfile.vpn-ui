@@ -1,30 +1,31 @@
 # ===========================================================================
-# vpn-ui panel + SNI-Spoofing-Go in ONE image.
+# vpn-ui panel, containerised. No SNI spoofing -- see Dockerfile.3x-ui for that.
 #
-#   sni-spoofing  ->  127.0.0.1:2020  (loopback only; never exposed)
-#   vpn-ui panel  ->  0.0.0.0:2083    (map this port; change it in the panel UI)
+#   vpn-ui panel  ->  0.0.0.0:2083   (change the port in the panel UI)
+#   database      ->  /etc/vpn-ui    (mount this)
 #
 # amd64 ONLY. Upstream publishes a single vpn-ui-amd64 asset and no arm64 build.
 #
 # READ THIS BEFORE DEPLOYING. vpn-ui is a 3x-ui fork whose selling point is
 # L2TP, PPTP, OpenVPN, OpenConnect, SSTP, IKEv2, WireGuard and AmneziaWG. Those
-# need CAP_NET_ADMIN, /dev/net/tun, kernel modules and systemd daemons, and
-# upstream installs them with a host deploy.sh -- it ships no container support
-# at all. In a container without NET_ADMIN, only the Xray-core protocols
-# (VLESS, VMess, Trojan, Shadowsocks, AnyTLS, TUIC, NaiveProxy...) can work, and
-# those are what plain 3x-ui already gives you. Run `sni-check` after starting
-# to see what the platform actually granted.
+# need CAP_NET_ADMIN, /dev/net/tun and kernel modules, and upstream installs
+# them with a host deploy.sh -- it ships no container support at all. Run this
+# on a VPS you control, with the modules loaded on the host FIRST; the panel
+# installs a kernel package when it cannot find them, which in a container is
+# both pointless and slow. DEPLOY.md has the host setup and the run command.
 #
-# The Xray core and geofiles are bundled inside the panel binary, so unlike
-# Dockerfile.3x-ui there is no separate tarball to unpack.
+# On a managed container platform that grants no NET_ADMIN, only the Xray-core
+# protocols can work -- and those are what plain 3x-ui already gives you.
 #
-# Same three deliberate omissions as Dockerfile -- do not "modernise" them:
+# The Xray core and geofiles are bundled inside the panel binary, so there is
+# no separate tarball to unpack.
+#
+# Same deliberate omissions as Dockerfile -- do not "modernise" them:
 #   * no `# syntax=` line  -> never pulls the docker/dockerfile frontend image
 #   * no heredoc           -> works on old builders and behind registry mirrors
 #   * no Go build          -> never contacts proxy.golang.org (403 in Iran)
 #
-#   https://github.com/aleskxyz/SNI-Spoofing-Go  (GPL-3.0)
-#   https://github.com/Sir-MmD/vpn-ui            (GPL-3.0)
+#   https://github.com/Sir-MmD/vpn-ui   (GPL-3.0)
 # ===========================================================================
 
 # --------------------------- download stage -------------------------------
@@ -33,7 +34,6 @@ FROM debian:bookworm-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl && rm -rf /var/lib/apt/lists/*
 
-ARG REF=latest
 ARG VPNUI_REF=latest
 ARG TARGETARCH
 
@@ -43,136 +43,41 @@ RUN set -eu; \
     if [ "${TARGETARCH:-amd64}" != "amd64" ]; then \
       echo "vpn-ui publishes an amd64 binary only (got ${TARGETARCH})" >&2; exit 1; \
     fi; \
-    if [ "$REF" = "latest" ]; then \
-      SNI_URL="https://github.com/aleskxyz/SNI-Spoofing-Go/releases/latest/download/sni-spoofing-linux-amd64"; \
-    else \
-      SNI_URL="https://github.com/aleskxyz/SNI-Spoofing-Go/releases/download/${REF}/sni-spoofing-linux-amd64"; \
-    fi; \
     if [ "$VPNUI_REF" = "latest" ]; then \
-      PANEL_URL="https://github.com/Sir-MmD/vpn-ui/releases/latest/download/vpn-ui-amd64"; \
+      URL="https://github.com/Sir-MmD/vpn-ui/releases/latest/download/vpn-ui-amd64"; \
     else \
-      PANEL_URL="https://github.com/Sir-MmD/vpn-ui/releases/download/${VPNUI_REF}/vpn-ui-amd64"; \
+      URL="https://github.com/Sir-MmD/vpn-ui/releases/download/${VPNUI_REF}/vpn-ui-amd64"; \
     fi; \
     mkdir -p /out; \
-    echo "downloading ${SNI_URL}"; \
-    curl -fL --retry 3 -o /out/sni-spoofing "$SNI_URL"; \
-    echo "downloading ${PANEL_URL}"; \
-    curl -fL --retry 3 -o /out/vpn-ui "$PANEL_URL"; \
-    chmod +x /out/sni-spoofing /out/vpn-ui; \
+    echo "downloading ${URL}"; \
+    curl -fL --retry 3 -o /out/vpn-ui "$URL"; \
+    chmod +x /out/vpn-ui; \
     test -s /out/vpn-ui
 
 # ---------------------------- runtime stage -------------------------------
 FROM debian:bookworm-slim
 
 # Debian 12 is one of the distributions upstream tests on, which is why this
-# image is not Alpine. iptables/iproute2 are for the active injector; the
-# second line is the debugging toolbox; the third is what the panel wants.
-# kmod is there for modprobe: without it the panel cannot load a kernel module
-# even on a host that has them, and it falls back to installing a kernel.
+# image is not Alpine.
+#   kmod       -> modprobe. Without it the panel cannot load a kernel module
+#                 even on a host that has them, and falls back to installing a
+#                 kernel package.
+#   libcap2-bin-> capsh, to check what capabilities the platform actually gave
+#                 you before blaming the panel.
+#   line 3     -> the network-debugging toolbox.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates iptables iproute2 libcap2-bin tini \
+        ca-certificates iptables iproute2 kmod libcap2-bin tini \
+        tzdata openssl bash cron procps curl wget nano vim-tiny less \
         iputils-ping dnsutils netcat-openbsd traceroute net-tools tcpdump \
-        procps curl wget nano vim-tiny less \
-        tzdata openssl bash cron kmod \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /out/sni-spoofing /usr/local/bin/sni-spoofing
 COPY --from=build /out/vpn-ui /app/vpn-ui
 
 # The panel unpacks its bundled cores into ./bin, so WORKDIR matters. Without
 # VPNUI_DB_FOLDER the database lands next to the binary in /app, which is not
 # the volume -- so it is pinned to /etc/vpn-ui below.
-RUN mkdir -p /data /etc/vpn-ui /var/log/vpn-ui /app/bin
+RUN mkdir -p /etc/vpn-ui /var/log/vpn-ui /app/bin
 WORKDIR /app
-
-RUN set -eu; printf '%s' \
-    IyEvYmluL3NoCiMgdnBuLXVpIHBhbmVsICsgc25pLXNwb29maW5nIGluIG9uZSBjb250YWluZXIuCiMKIyAgIHNuaS \
-    1zcG9vZmluZyAgLT4gIHN0YXJ0cyBvbmx5IHdoZW4gQ09OTkVDVCBpcyBzZXQsIGluIHRoZSBiYWNrZ3JvdW5kLAoj \
-    ICAgICAgICAgICAgICAgICAgICAgbGlzdGVuaW5nIG9uIDEyNy4wLjAuMToyMDIwIGJ5IGRlZmF1bHQgc28gdGhlIH \
-    BhbmVsJ3MKIyAgICAgICAgICAgICAgICAgICAgIFhyYXkgY2FuIHVzZSBpdCBhcyBhIFZMRVNTIG91dGJvdW5kIHRh \
-    cmdldC4KIyAgIHZwbi11aSBwYW5lbCAgLT4gIGFsd2F5cyBydW5zLCBpbiB0aGUgZm9yZWdyb3VuZCAoaXQgaXMgUE \
-    lEIDEncyBjaGlsZCkuCnNldCAtZXUKCmxvZygpIHsgcHJpbnRmICdbZW50cnlwb2ludF0gJXNcbicgIiQqIiA+JjI7 \
-    IH0KCiMgLS0tIG92ZXJyaWRlIGhvb2s6IHlvdXIgb3duIHNjcmlwdCBvbiB0aGUgdm9sdW1lIHdpbnMgLS0tLS0tLS \
-    0tLS0tLS0tLS0tLS0tLS0KaWYgWyAtZiAvZGF0YS9lbnRyeXBvaW50LnNoIF0gJiYgWyAiJHtVU0VfVk9MVU1FX0VO \
-    VFJZUE9JTlQ6LXRydWV9IiA9ICJ0cnVlIiBdOyB0aGVuCiAgICBsb2cgInJ1bm5pbmcgL2RhdGEvZW50cnlwb2ludC \
-    5zaCBmcm9tIHRoZSB2b2x1bWUiCiAgICBleGVjIC9iaW4vc2ggL2RhdGEvZW50cnlwb2ludC5zaCAiJEAiCmZpCgoj \
-    IC0tLSBzaGVsbCBwYXNzLXRocm91Z2ggZm9yIGBkb2NrZXIgZXhlY2AgLyBkZWJ1Z2dpbmcgLS0tLS0tLS0tLS0tLS \
-    0tLS0tLS0tLS0tCmlmIFsgIiQjIiAtZ3QgMCBdOyB0aGVuCiAgICBjYXNlICIkMSIgaW4KICAgICAgICBzaHxiYXNo \
-    fC9iaW4vc2h8L2Jpbi9iYXNoKSBleGVjICIkQCIgOzsKICAgIGVzYWMKICAgIGV4ZWMgIiRAIgpmaQoKaWYgWyAiJC \
-    hpZCAtdSkiIC1uZSAwIF07IHRoZW4KICAgIGxvZyAiRVJST1I6IG5vdCByb290IGluc2lkZSB0aGUgY29udGFpbmVy \
-    OyBzbmktc3Bvb2ZpbmcgbmVlZHMgcm9vdC4iCiAgICBleGl0IDEKZmkKCiMgLS0tIHNuaS1zcG9vZmluZyAtLS0tLS \
-    0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KaWYgWyAtbiAiJHtD \
-    T05ORUNUOi19IiBdOyB0aGVuCiAgICBIQVZFX05FVF9BRE1JTj11bmtub3duCiAgICBpZiBjb21tYW5kIC12IGNhcH \
-    NoID4vZGV2L251bGwgMj4mMTsgdGhlbgogICAgICAgIENBUFM9IiQoY2Fwc2ggLS1wcmludCAyPi9kZXYvbnVsbCB8 \
-    IHNlZCAtbiAncy9eQ3VycmVudDogLy9wJyB8IGhlYWQgLW4xKSIKICAgICAgICBsb2cgImNhcGFiaWxpdGllczogJH \
-    tDQVBTOi11bmtub3dufSIKICAgICAgICBjYXNlICIkQ0FQUyIgaW4KICAgICAgICAgICAgKmNhcF9uZXRfYWRtaW4q \
-    fCI9ZXAiKikgSEFWRV9ORVRfQURNSU49eWVzIDs7CiAgICAgICAgICAgICopIEhBVkVfTkVUX0FETUlOPW5vIDs7Ci \
-    AgICAgICAgZXNhYwogICAgICAgIGNhc2UgIiRDQVBTIiBpbgogICAgICAgICAgICAqY2FwX25ldF9yYXcqfCI9ZXAi \
-    KikgOzsKICAgICAgICAgICAgKikgbG9nICJXQVJOSU5HOiBjYXBfbmV0X3JhdyBtaXNzaW5nIC0+IG5vIHBhY2tldC \
-    BpbmplY3Rpb24gaXMgcG9zc2libGUgYXQgYWxsLiIgOzsKICAgICAgICBlc2FjCiAgICBmaQogICAgaWYgWyAteiAi \
-    JHtJTkpFQ1RPUjotfSIgXSAmJiBbICIkSEFWRV9ORVRfQURNSU4iID0gIm5vIiBdOyB0aGVuCiAgICAgICAgSU5KRU \
-    NUT1I9cGFzc2l2ZQogICAgICAgIGxvZyAiY2FwX25ldF9hZG1pbiBtaXNzaW5nIC0+IGF1dG8tc2VsZWN0aW5nIElO \
-    SkVDVE9SPXBhc3NpdmUgKHNldCBJTkpFQ1RPUj1hY3RpdmUgdG8gZm9yY2UpLiIKICAgIGVsaWYgWyAiJHtJTkpFQ1 \
-    RPUjotfSIgPSAiYWN0aXZlIiBdICYmIFsgIiRIQVZFX05FVF9BRE1JTiIgPSAibm8iIF07IHRoZW4KICAgICAgICBs \
-    b2cgIldBUk5JTkc6IElOSkVDVE9SPWFjdGl2ZSBidXQgY2FwX25ldF9hZG1pbiBpcyBtaXNzaW5nOyB0aGlzIHdpbG \
-    wgZmFpbC4gVHJ5IElOSkVDVE9SPXBhc3NpdmUuIgogICAgZmkKCiAgICBzZXQgLS0KICAgIGlmIFsgLW4gIiR7TElT \
-    VEVOOi19IiBdOyB0aGVuCiAgICAgICAgc2V0IC0tICIkQCIgLWxpc3RlbiAiJExJU1RFTiIKICAgIGVsaWYgWyAtbi \
-    AiJHtQT1JUOi19IiBdOyB0aGVuCiAgICAgICAgc2V0IC0tICIkQCIgLWxpc3RlbiAiMC4wLjAuMDoke1BPUlR9Igog \
-    ICAgZWxzZQogICAgICAgICMgU2FtZSBjb250YWluZXIgYXMgWHJheSwgc28gbG9vcGJhY2sgaXMgYm90aCByZWFjaG \
-    FibGUgYW5kIHVuZXhwb3NlZC4KICAgICAgICBzZXQgLS0gIiRAIiAtbGlzdGVuICIxMjcuMC4wLjE6JHtTUE9PRl9Q \
-    T1JUOi0yMDIwfSIKICAgIGZpCiAgICBzZXQgLS0gIiRAIiAtY29ubmVjdCAiJENPTk5FQ1QiCgogICAgWyAtbiAiJH \
-    tGQUtFX1NOSTotfSIgXSAgICAgICAgJiYgc2V0IC0tICIkQCIgLWZha2Utc25pICIkRkFLRV9TTkkiCiAgICBbIC1u \
-    ICIke1VUTFM6LX0iIF0gICAgICAgICAgICAmJiBzZXQgLS0gIiRAIiAtdXRscyAiJFVUTFMiCiAgICBbIC1uICIke0 \
-    lOSkVDVE9SOi19IiBdICAgICAgICAmJiBzZXQgLS0gIiRAIiAtaW5qZWN0b3IgIiRJTkpFQ1RPUiIKICAgIFsgLW4g \
-    IiR7RkFLRV9SRVBFQVQ6LX0iIF0gICAgICYmIHNldCAtLSAiJEAiIC1mYWtlLXJlcGVhdCAiJEZBS0VfUkVQRUFUIg \
-    ogICAgWyAtbiAiJHtGQUtFX0RFTEFZOi19IiBdICAgICAgJiYgc2V0IC0tICIkQCIgLWZha2UtZGVsYXkgIiRGQUtF \
-    X0RFTEFZIgogICAgWyAtbiAiJHtBQ0tfVElNRU9VVDotfSIgXSAgICAgJiYgc2V0IC0tICIkQCIgLWFjay10aW1lb3 \
-    V0ICIkQUNLX1RJTUVPVVQiCiAgICBbIC1uICIke0ZSQUdNRU5UX0RFTEFZOi19IiBdICAmJiBzZXQgLS0gIiRAIiAt \
-    ZnJhZ21lbnQtZGVsYXkgIiRGUkFHTUVOVF9ERUxBWSIKICAgIFsgLW4gIiR7U05JX0NIVU5LOi19IiBdICAgICAgIC \
-    YmIHNldCAtLSAiJEAiIC1zbmktY2h1bmsgIiRTTklfQ0hVTksiCiAgICAjIEdvIGJvb2wgZmxhZ3MgbmVlZCB0aGUg \
-    PXZhbHVlIGZvcm07ICItZW5hYmxlLWZyYWdtZW50IHRydWUiIHdvdWxkIG5vdCB3b3JrLgogICAgWyAtbiAiJHtFTk \
-    FCTEVfRlJBR01FTlQ6LX0iIF0gJiYgc2V0IC0tICIkQCIgIi1lbmFibGUtZnJhZ21lbnQ9JHtFTkFCTEVfRlJBR01F \
-    TlR9IgoKICAgICMgVEVTVF9NT0RFIHByaW50cyB0aGUgZmluZ2VycHJpbnQvZnJhZ21lbnQgbWF0cml4IGFuZCBleG \
-    l0cy4gUnVuIGl0IGluIHRoZQogICAgIyBmb3JlZ3JvdW5kIGFuZCBza2lwIHRoZSBwYW5lbCBlbnRpcmVseSAtLSB5 \
-    b3UgYXJlIGhlcmUgdG8gcmVhZCB0aGUgbG9nLgogICAgaWYgWyAiJHtURVNUX01PREU6LWZhbHNlfSIgPSAidHJ1ZS \
-    IgXTsgdGhlbgogICAgICAgIGxvZyAiVEVTVF9NT0RFOiBydW5uaW5nIHRoZSBtYXRyaXggaW5zdGVhZCBvZiB0aGUg \
-    cGFuZWwiCiAgICAgICAgIyBzaGVsbGNoZWNrIGRpc2FibGU9U0MyMDg2CiAgICAgICAgZXhlYyAvdXNyL2xvY2FsL2 \
-    Jpbi9zbmktc3Bvb2ZpbmcgIiRAIiAtdGVzdCAke0VYVFJBX0FSR1M6LX0KICAgIGZpCgogICAgbG9nICJzbmktc3Bv \
-    b2ZpbmcgJCogJHtFWFRSQV9BUkdTOi19IgogICAgIyBSZXN0YXJ0ZWQgb24gZXhpdCBzbyBhIGNyYXNoZWQgc3Bvb2 \
-    ZlciBkb2VzIG5vdCBzaWxlbnRseSBibGFjay1ob2xlIGV2ZXJ5CiAgICAjIG91dGJvdW5kIHdoaWxlIHRoZSBwYW5l \
-    bCBrZWVwcyBoYXBwaWx5IHNlcnZpbmcuCiAgICAjIHNoZWxsY2hlY2sgZGlzYWJsZT1TQzIwODYKICAgIHsgd2hpbG \
-    UgOjsgZG8KICAgICAgICAvdXNyL2xvY2FsL2Jpbi9zbmktc3Bvb2ZpbmcgIiRAIiAke0VYVFJBX0FSR1M6LX0gfHwg \
-    bG9nICJzbmktc3Bvb2ZpbmcgZXhpdGVkICgkPyksIHJlc3RhcnRpbmcgaW4gMnMiCiAgICAgICAgc2xlZXAgMgogIC \
-    AgICBkb25lOyB9ICYKZWxzZQogICAgbG9nICJDT05ORUNUIHVuc2V0IC0+IHBhbmVsIG9ubHksIG5vIFNOSSBzcG9v \
-    ZmluZy4iCmZpCgojIC0tLSB2cG4tdWkgcGFuZWwgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS \
-    0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCmNkIC9hcHAKbG9nICJzdGFydGluZyB2cG4tdWkgcGFuZWwiCmV4ZWMgL2Fw \
-    cC92cG4tdWkK \
-    | base64 -d > /usr/local/bin/entrypoint.sh; \
-    chmod +x /usr/local/bin/entrypoint.sh
-
-RUN set -eu; printf '%s' \
-    IyEvYmluL3NoCiMgQ2FuIHRoaXMgY29udGFpbmVyIGFjdHVhbGx5IGluamVjdCBwYWNrZXRzPyBFeGl0cyBub24tem \
-    VybyBpZiBpdCBjYW5ub3QuCkNBUFM9IiQoY2Fwc2ggLS1wcmludCAyPi9kZXYvbnVsbCB8IHNlZCAtbiAncy9eQ3Vy \
-    cmVudDogLy9wJyB8IGhlYWQgLW4xKSIKUkM9MAoKaWYgWyAiJChpZCAtdSkiIC1lcSAwIF07IHRoZW4KICAgIGVjaG \
-    8gInJvb3Q6ICAgICAgeWVzIgplbHNlCiAgICBlY2hvICJyb290OiAgICAgIE5PICAtPiBzbmktc3Bvb2ZpbmcgcmVm \
-    dXNlcyB0byBzdGFydCBhcyBub24tcm9vdCIKICAgIFJDPTEKZmkKCmVjaG8gImNhcHM6ICAgICAgJHtDQVBTOi08Y2 \
-    Fwc2ggdW5hdmFpbGFibGU+fSIKCmNhc2UgIiRDQVBTIiBpbgogICAgKmNhcF9uZXRfcmF3KnwiPWVwIiopCiAgICAg \
-    ICAgZWNobyAiTkVUX1JBVzogICB5ZXMgLT4gcGFzc2l2ZSBpbmplY3RvciBjYW4gcnVuIiA7OwogICAgKikKICAgIC \
-    AgICBlY2hvICJORVRfUkFXOiAgIE5PICAtPiBubyBpbmplY3Rpb24gaXMgcG9zc2libGU7IHRoZSBwbGF0Zm9ybSBz \
-    dHJpcHBlZCBpdCIKICAgICAgICBSQz0xIDs7CmVzYWMKCmNhc2UgIiRDQVBTIiBpbgogICAgKmNhcF9uZXRfYWRtaW \
-    4qfCI9ZXAiKikKICAgICAgICBlY2hvICJORVRfQURNSU46IHllcyAtPiB0aGUgYWN0aXZlIGluamVjdG9yIGlzIGF2 \
-    YWlsYWJsZSB0b28iIDs7CiAgICAqKQogICAgICAgIGVjaG8gIk5FVF9BRE1JTjogbm8gIC0+IHBhc3NpdmUgaXMgYX \
-    V0by1zZWxlY3RlZCwgd2hpY2ggaXMgZmluZSIgOzsKZXNhYwoKUD0iJHtTUE9PRl9QT1JUOi0yMDIwfSIKWyAtbiAi \
-    JHtQT1JUOi19IiBdICYmIFA9IiR7UE9SVH0iClsgLW4gIiR7TElTVEVOOi19IiBdICYmIFA9IiR7TElTVEVOIyMqOn \
-    0iCgppZiBbIC16ICIke0NPTk5FQ1Q6LX0iIF07IHRoZW4KICAgIGVjaG8gInNwb29mZXI6ICAgbm90IGNvbmZpZ3Vy \
-    ZWQgKENPTk5FQ1QgdW5zZXQpIC0+IHBhbmVsIG9ubHkiCmVsaWYgbmMgLXogMTI3LjAuMC4xICIkUCIgMj4vZGV2L2 \
-    51bGw7IHRoZW4KICAgIGVjaG8gInNwb29mZXI6ICAgbGlzdGVuaW5nIG9uIDEyNy4wLjAuMTokUCAtPiBwb2ludCB0 \
-    aGUgVkxFU1Mgb3V0Ym91bmQgaGVyZSIKZWxzZQogICAgZWNobyAic3Bvb2ZlcjogICBOT1QgbGlzdGVuaW5nIG9uID \
-    EyNy4wLjAuMTokUCAtPiByZWFkIHRoZSBjb250YWluZXIgbG9nIgogICAgUkM9MQpmaQoKWyAiJFJDIiAtZXEgMCBd \
-    ICYmIGVjaG8gIiIgJiYgZWNobyAiT0s6IHNwb29maW5nIGNhbiB3b3JrIGhlcmUuIgpbICIkUkMiIC1uZSAwIF0gJi \
-    YgZWNobyAiIiAmJiBlY2hvICJCUk9LRU46IHNlZSB0aGUgTk8vTk9UIGxpbmVzIGFib3ZlLiIKZXhpdCAiJFJDIgo= \
-    | base64 -d > /usr/local/bin/sni-check; \
-    chmod +x /usr/local/bin/sni-check
 
 ENV VPNUI_DB_FOLDER="/etc/vpn-ui" \
     VPNUI_LOG_FOLDER="/var/log/vpn-ui" \
@@ -181,4 +86,5 @@ ENV VPNUI_DB_FOLDER="/etc/vpn-ui" \
 EXPOSE 2083
 VOLUME ["/etc/vpn-ui"]
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+# tini reaps zombies: the panel forks VPN daemons that would otherwise pile up.
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/vpn-ui"]
