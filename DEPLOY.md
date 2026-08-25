@@ -226,8 +226,130 @@ Restart Xray. The flow is then:
 your phone -> inbound 8443 -> rule -> outbound -> 127.0.0.1:2020 -> spoofer -> foreign server
 ```
 
+## Getting a TLS certificate on a PaaS
+
+Needed the moment an inbound terminates TLS **inside** the container: Hysteria2, TUIC,
+or any Trojan/VLESS-TLS inbound you expose directly rather than through the provider's
+HTTPS edge.
+
+### Why the provider's certificate does not carry over
+
+A PaaS that gives you an HTTPS hostname terminates TLS at *its* edge, with *its*
+wildcard, and reverse-proxies plain HTTP to the container:
+
+```
+client --TLS(provider cert)--> edge --plain HTTP--> your container
+```
+
+That is why a VLESS/XHTTP link on such a hostname works with `insecure=0` while you own
+no certificate at all — you are borrowing theirs. Hysteria2 cannot borrow it. It is QUIC,
+and it does its own TLS handshake **end to end** with the client; the edge is not on that
+path and never sees the connection. The container has to present a certificate itself.
+
+### Why DNS-01 is the only challenge that works
+
+A public CA validates on fixed ports:
+
+| Challenge | Needs | On a PaaS |
+|---|---|---|
+| HTTP-01 | external port **80** | No — you get assigned high ports |
+| TLS-ALPN-01 | external port **443** | No — same |
+| DNS-01 | a TXT record | **Yes** — no inbound port at all |
+
+So the hostname must live in a zone *you* control. A provider-assigned name
+(`something.provider.net`) cannot be certified: its DNS is theirs, and ports 80/443 are
+not routed to you. Point your own name at the provider's IP instead — the A record can
+target their address perfectly well, you just need to own the zone.
+
+Behind Cloudflare, keep the record **grey-cloud (proxy off)**. Orange-cloud proxying
+would swallow QUIC and hide the origin port.
+
+### Issuing it, inside the container
+
+Only `/etc/x-ui` survives a redeploy, so acme.sh has to live there. Install from the
+tarball: the `curl | sh` wrapper mangles `--home` into `----home`, and `--install`
+copies from the working directory, so `cd` first.
+
+```bash
+curl -fL https://github.com/acmesh-official/acme.sh/archive/master.tar.gz | tar xz -C /tmp
+cd /tmp/acme.sh-master && ./acme.sh --install --home /etc/x-ui/acme --config-home /etc/x-ui/acme
+```
+
+Every later shell needs these, or acme.sh silently falls back to `$HOME/.acme.sh` and
+writes off the volume:
+
+```bash
+export LE_WORKING_DIR=/etc/x-ui/acme LE_CONFIG_HOME=/etc/x-ui/acme
+```
+
+With a DNS API token, one command does everything and cron renews it (`dns_cf` shown;
+`CF_Token` needs Zone:DNS:Edit):
+
+```bash
+export CF_Token=... CF_Account_ID=...
+/etc/x-ui/acme/acme.sh --issue --dns dns_cf -d hy.example.com --keylength ec-256 --server letsencrypt
+```
+
+Without a token, the same thing by hand — it prints a TXT value, you add
+`_acme-challenge.hy` in the DNS panel, wait a minute, then renew:
+
+```bash
+/etc/x-ui/acme/acme.sh --issue --dns -d hy.example.com --keylength ec-256 --server letsencrypt \
+    --yes-I-know-dns-manual-mode-enough-go-ahead-please
+/etc/x-ui/acme/acme.sh --renew -d hy.example.com --ecc \
+    --yes-I-know-dns-manual-mode-enough-go-ahead-please
+```
+
+Either way, install the pair where the server will read it. The directory is not created
+for you:
+
+```bash
+mkdir -p /etc/x-ui/cert
+/etc/x-ui/acme/acme.sh --install-cert -d hy.example.com --ecc \
+    --fullchain-file /etc/x-ui/cert/hy.crt --key-file /etc/x-ui/cert/hy.key
+```
+
+`cat` those two files when a panel field wants the PEM text rather than a path.
+
+### Using it
+
+```yaml
+tls:
+  cert: /etc/x-ui/cert/hy.crt
+  key: /etc/x-ui/cert/hy.key
+```
+
+One rule: **clients must connect to the certified hostname**. A certificate covers a
+name, not a port, so whatever external port the provider maps is fine —
+`hy.example.com:34567` with `sni=hy.example.com` and `insecure=0` verifies correctly.
+
+Two traps worth naming:
+
+- **Cloudflare Origin CA certificates do not work here.** Free and clickable, but only
+  Cloudflare's proxy trusts them; a client checking public roots rejects one.
+- **Manual DNS mode cannot auto-renew.** acme.sh prints the next renewal date at issue
+  time; that is a calendar reminder, not a schedule. `cron` is installed in the image but
+  not started — `service cron start`, and put it in `/data/entrypoint.sh` to survive
+  restarts. With an API token the renewal is unattended.
+
+### Before spending time on any of this
+
+Hysteria2 and TUIC are UDP. Confirm the provider's port mapping actually forwards UDP
+and not just TCP — in the container:
+
+```bash
+nc -u -l 36712
+```
+
+then send it something from outside with `nc -u <host> <external-port>`. Nothing arriving
+means no certificate will help, and the failure will not look like a TLS error.
+
+---
+
 ## Limits
 
 - **One upstream per container.** A second foreign server needs a second deployment.
-- **TCP only.** No QUIC, no XHTTP-over-UDP, no Hysteria on this path.
+- **TCP only.** No QUIC, no XHTTP-over-UDP, no Hysteria *through the spoofer*. Such an
+  inbound can still run beside it, on its own port and its own certificate — see
+  [Getting a TLS certificate on a PaaS](#getting-a-tls-certificate-on-a-paas).
 - **One replica.** SQLite on a ReadWriteOnce volume, and two spoofers would fight over it.
