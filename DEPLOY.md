@@ -283,13 +283,21 @@ export LE_WORKING_DIR=/etc/x-ui/acme LE_CONFIG_HOME=/etc/x-ui/acme
 ```
 
 Without a token, the same thing by hand — it prints a TXT value, you add
-`_acme-challenge.hy` in the DNS panel, wait a minute, then renew:
+`_acme-challenge.yourDOMAIN` in the DNS panel, wait a minute, then renew:
 
 ```bash
 /etc/x-ui/acme/acme.sh --issue --dns \
   -d yourDOMAIN.example.com \
   --keylength ec-256 \
   --server letsencrypt \
+  --yes-I-know-dns-manual-mode-enough-go-ahead-please
+```
+then after adding TXT record:
+
+```bash
+/etc/x-ui/acme/acme.sh --renew \
+  -d yourDOMAIN.example.com \
+  --ecc \
   --yes-I-know-dns-manual-mode-enough-go-ahead-please
 ```
 
