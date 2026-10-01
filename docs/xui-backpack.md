@@ -49,26 +49,55 @@ on a filtered link.
 
 The client opens nothing for the tunnel.
 
-## Example
+## Example: reach a VLESS inbound on your abroad server
 
-Server (Iran side, the one users reach):
+You have a VPS abroad (Hetzner, say) with a VLESS inbound on port `1004`, and you want
+users to reach it through the Iran container. All addresses and ports below are dummies.
+
+```
+user -> Iran container :2087 -> tunnel (the abroad VPS dials out) -> abroad VPS 127.0.0.1:1004
+```
+
+**1. Iran container** (this image, the `server` role):
 
 ```
 BACKPACK_ROLE=server
-BACKPACK_TOKEN=<secret>
+BACKPACK_TOKEN=<long random secret>
 BACKPACK_BIND=0.0.0.0:8443
-BACKPACK_PORTS=443
+BACKPACK_PORTS=2087=127.0.0.1:1004
 ```
 
-Client (kharej side, where the 3x-ui inbound on `:443` lives):
+`2087=127.0.0.1:1004` means: listen on `2087` here, deliver to `127.0.0.1:1004` on the
+abroad VPS. Write `BACKPACK_PORTS=1004` to use the same number on both sides.
 
-```
-BACKPACK_ROLE=client
-BACKPACK_TOKEN=<same secret>
-BACKPACK_REMOTE=<server public host>:<server tunnel port>
+**2. Platform ports.** Expose two TCP ports and note the external number the platform
+assigns to each. A tunnel port and a user port can't be the same one.
+
+| Container port | Example external | Used for |
+|---|---|---|
+| `8443` | `203.0.113.10:30001` | the tunnel, dialled by the abroad VPS |
+| `2087` | `203.0.113.10:30002` | users |
+
+**3. Abroad VPS** (the `client` role). It's a normal server with systemd, so install
+BackPack natively rather than in a container, so `127.0.0.1:1004` is the real inbound:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/AminMGMT/BackPack/main/install.sh)
+sudo backpack
 ```
 
-Users hit `server:443`, which arrives at `127.0.0.1:443` on the client.
+In the wizard choose the kharej/client setup, the same transport (`tcp`), the same
+token, and the Iran **external** tunnel address: `203.0.113.10:30001`. It needs no
+inbound port, only outbound access to that address.
+
+**4. Client link.** Take the VLESS link from the abroad inbound and change only the
+address and port to `203.0.113.10:30002`. UUID, Reality/TLS settings and SNI stay the
+same; the traffic passes through as raw TCP.
+
+Also check on the abroad VPS that the inbound listens on `0.0.0.0` or `127.0.0.1`
+(`ss -ltnp | grep 1004`), not only on its public IP.
+
+**Don't** use the abroad VPS's own IP in the client link: that skips the tunnel.
 
 ## Check it
 
