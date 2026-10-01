@@ -9,7 +9,7 @@
 #   3x-ui panel   ->  0.0.0.0:2053    (map this one in the provider's panel)
 #
 # In the panel, point a VLESS *outbound* at 127.0.0.1:2020 and its whole TLS
-# handshake goes out behind a decoy ClientHello. See README.md.
+# handshake goes out behind a decoy ClientHello. See DEPLOY.md.
 #
 #   CONNECT=203.0.113.10:443  FAKE_SNI=hcaptcha.com  UTLS=firefox
 #

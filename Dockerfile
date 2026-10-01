@@ -1,5 +1,5 @@
 # ===========================================================================
-# SNI-Spoofing-Go — container image. See README.md.
+# SNI-Spoofing-Go — container image. See docs/sni-spoofing-only.md.
 #
 # Configured entirely by environment variables (no config.ini):
 #   CONNECT=104.19.229.21:443  FAKE_SNI=hcaptcha.com  UTLS=firefox  PORT=40443

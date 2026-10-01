@@ -1,0 +1,148 @@
+# ===========================================================================
+# 3x-ui panel + Kariz in ONE image.
+#
+# Why one image: PaaS providers that build from a Dockerfile give you a single
+# container, and you only get ports/volumes/env AFTER the build.
+#
+#   kariz    ->  started in the background only when KARIZ_ROLE is set
+#   3x-ui panel ->  0.0.0.0:2053 (map this one in the provider's panel)
+#
+# Leave KARIZ_ROLE unset and you get a plain 3x-ui panel with no tunnel.
+#
+#   KARIZ_ROLE=entry|exit  KARIZ_TOKEN=...  KARIZ_TRANSPORT=tcpmux  KARIZ_MODE=reverse
+#   entry: KARIZ_LISTEN=0.0.0.0:3080 (reverse) or KARIZ_REMOTE=exit:3080 (direct)
+#          KARIZ_FORWARD=443=127.0.0.1:443,8080=127.0.0.1:80
+#   exit : KARIZ_REMOTE=entry:3080 (reverse) or KARIZ_LISTEN=0.0.0.0:3080 (direct)
+
+# Same deliberate omissions as Dockerfile.3x-ui -- do not "modernise" them:
+#   * no `# syntax=` line  -> never pulls the docker/dockerfile frontend image
+#   * no heredoc, no COPY  -> some builders get the Dockerfile alone, no context
+#   * no Go/Rust/npm build -> every binary comes from a GitHub release
+#
+#   https://github.com/Erfan-XRay/Kariz   (see its LICENSE)
+#   https://github.com/MHSanaei/3x-ui            (GPL-3.0)
+# ===========================================================================
+
+# --------------------------- download stage -------------------------------
+FROM debian:bookworm-slim AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl && rm -rf /var/lib/apt/lists/*
+
+# REF / XUI_REF = latest -> newest release of each project. Pin with --build-arg.
+ARG REF=latest
+ARG XUI_REF=latest
+ARG TARGETARCH
+ARG TARGETVARIANT
+
+# No `#` comments inside the RUN below: Docker joins continuation lines into a
+# single shell line, so a comment would swallow everything after it. Note the
+# armv7 rename -- the panel maps GOARCH=arm to "arm32" (internal/xray/process.go),
+# so without it the panel cannot find the Xray binary it just shipped.
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}${TARGETVARIANT:-}" in \
+      amd64)  ARCH=amd64;  TARCH=x86_64 ;; \
+      arm64)  ARCH=arm64;  TARCH=aarch64 ;; \
+      armv7)  ARCH=armv7;  TARCH=armv7 ;; \
+      *) echo "unsupported arch: ${TARGETARCH:-}${TARGETVARIANT:-}" >&2; exit 1 ;; \
+    esac; \
+    if [ "$XUI_REF" = "latest" ]; then \
+      XUI_URL="https://github.com/MHSanaei/3x-ui/releases/latest/download/x-ui-linux-${ARCH}.tar.gz"; \
+    else \
+      XUI_URL="https://github.com/MHSanaei/3x-ui/releases/download/${XUI_REF}/x-ui-linux-${ARCH}.tar.gz"; \
+    fi; \
+    if [ "$REF" = "latest" ]; then \
+      REF=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/Erfan-XRay/Kariz/releases/latest); \
+      REF=${REF##*/}; \
+    fi; \
+    NAME="kariz-${REF}-${TARCH}-linux"; \
+    BASE="https://github.com/Erfan-XRay/Kariz/releases/download/${REF}"; \
+    echo "downloading ${BASE}/${NAME}.tar.gz"; \
+    curl -fL --retry 3 -o "/tmp/${NAME}.tar.gz" "${BASE}/${NAME}.tar.gz"; \
+    curl -fL --retry 3 -o "/tmp/${NAME}.tar.gz.sha256" "${BASE}/${NAME}.tar.gz.sha256"; \
+    (cd /tmp && sha256sum -c "${NAME}.tar.gz.sha256"); \
+    tar -xzf "/tmp/${NAME}.tar.gz" -C /tmp; \
+    mkdir -p /out; \
+    install -m 0755 "/tmp/${NAME}/kariz" /out/kariz; \
+    mkdir -p /out /app; \
+    echo "downloading ${XUI_URL}"; \
+    curl -fL --retry 3 -o /tmp/x-ui.tar.gz "$XUI_URL"; \
+    tar -xzf /tmp/x-ui.tar.gz -C /app --strip-components=1; \
+    rm -f /tmp/x-ui.tar.gz; \
+    chmod +x /app/x-ui /app/bin/xray-linux-* /app/bin/mtg-linux-* 2>/dev/null || true; \
+    if [ "$ARCH" = "armv7" ]; then \
+      mv /app/bin/xray-linux-armv7 /app/bin/xray-linux-arm32; \
+      chmod +x /app/bin/xray-linux-arm32; \
+    fi; \
+    test -s /app/x-ui; \
+    test -s /out/kariz
+
+# ---------------------------- runtime stage -------------------------------
+FROM debian:bookworm-slim
+
+# Network-debugging toolbox (ping, dig, nc, traceroute, netstat, tcpdump) plus
+# what the panel wants: certs, timezone, openssl for the SSL menu, bash+cron
+# for acme.sh renewals.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates iproute2 libcap2-bin tini \
+        iputils-ping dnsutils netcat-openbsd traceroute net-tools tcpdump \
+        procps curl wget nano vim-tiny less \
+        tzdata openssl bash cron \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /out/kariz /usr/local/bin/kariz
+COPY --from=build /app/ /app/
+
+# The panel resolves its Xray binary as "bin/xray-linux-*" relative to the
+# working directory, so WORKDIR must be /app. The DB lives in /etc/x-ui.
+RUN mkdir -p /data /etc/x-ui /var/log/x-ui
+WORKDIR /app
+
+# entrypoint.sh, base64-encoded so this Dockerfile needs no heredoc support
+# and no external frontend. Decode it to read/edit:
+#   docker run --rm --entrypoint sh IMAGE -c 'cat /usr/local/bin/entrypoint.sh'
+RUN set -eu; printf '%s' \
+    IyEvYmluL3NoCiMgM3gtdWkgcGFuZWwgKyBLYXJpeiB0dW5uZWwgaW4gb25lIGNvbnRhaW5lci4KIwojICAga2FyaXogICAtPiBz \
+    dGFydHMgb25seSB3aGVuIEtBUklaX1JPTEUgaXMgc2V0LCBpbiB0aGUgYmFja2dyb3VuZCwgcmVzdGFydGVkIG9uIGV4aXQuCiMg \
+    ICB4LXVpICAgIC0+IGFsd2F5cyBydW5zLCBpbiB0aGUgZm9yZWdyb3VuZCAoaXQgaXMgUElEIDEncyBjaGlsZCkuCiMKIyBDb25m \
+    aWcgaXMgZ2VuZXJhdGVkIGZyb20gS0FSSVpfKiB2YXJpYWJsZXMuIERyb3AgYSBmdWxsIC9kYXRhL2thcml6LnRvbWwgb24gdGhl \
+    CiMgdm9sdW1lIHRvIHVzZSB5b3VyIG93biBmaWxlIGluc3RlYWQuCnNldCAtZXUKCmxvZygpIHsgcHJpbnRmICdbZW50cnlwb2lu \
+    dF0gJXNcbicgIiQqIiA+JjI7IH0KCmlmIFsgLWYgL2RhdGEvZW50cnlwb2ludC5zaCBdICYmIFsgIiR7VVNFX1ZPTFVNRV9FTlRS \
+    WVBPSU5UOi10cnVlfSIgPSAidHJ1ZSIgXTsgdGhlbgogICAgbG9nICJydW5uaW5nIC9kYXRhL2VudHJ5cG9pbnQuc2ggZnJvbSB0 \
+    aGUgdm9sdW1lIgogICAgZXhlYyAvYmluL3NoIC9kYXRhL2VudHJ5cG9pbnQuc2ggIiRAIgpmaQoKaWYgWyAiJCMiIC1ndCAwIF07 \
+    IHRoZW4KICAgIGV4ZWMgIiRAIgpmaQoKaWYgWyAtbiAiJHtLQVJJWl9ST0xFOi19IiBdOyB0aGVuCiAgICBDPS9ldGMva2FyaXov \
+    Y29uZmlnLnRvbWwKICAgIG1rZGlyIC1wIC9ldGMva2FyaXoKICAgIGlmIFsgLWYgL2RhdGEva2FyaXoudG9tbCBdOyB0aGVuCiAg \
+    ICAgICAgQz0vZGF0YS9rYXJpei50b21sCiAgICAgICAgbG9nICJ1c2luZyAvZGF0YS9rYXJpei50b21sIgogICAgZWxzZQogICAg \
+    ICAgIFsgLW4gIiR7S0FSSVpfVE9LRU46LX0iIF0gfHwgeyBsb2cgIkVSUk9SOiBzZXQgS0FSSVpfVE9LRU4gKGdlbmVyYXRlIG9u \
+    ZToga2FyaXogdG9rZW4pLiI7IGV4aXQgMTsgfQogICAgICAgIHsKICAgICAgICAgICAgcHJpbnRmICdyb2xlID0gIiVzIlxubW9k \
+    ZSA9ICIlcyJcbicgIiRLQVJJWl9ST0xFIiAiJHtLQVJJWl9NT0RFOi1yZXZlcnNlfSIKICAgICAgICAgICAgWyAtbiAiJHtLQVJJ \
+    Wl9QUk9GSUxFOi19IiBdICYmIHByaW50ZiAncHJvZmlsZSA9ICIlcyJcbicgIiRLQVJJWl9QUk9GSUxFIgogICAgICAgICAgICBw \
+    cmludGYgJ1t0dW5uZWxdXG50cmFuc3BvcnQgPSAiJXMiXG50b2tlbiA9ICIlcyJcbicgIiR7S0FSSVpfVFJBTlNQT1JUOi10Y3Bt \
+    dXh9IiAiJEtBUklaX1RPS0VOIgogICAgICAgICAgICBbIC1uICIke0tBUklaX0xJU1RFTjotfSIgXSAmJiBwcmludGYgJ2xpc3Rl \
+    biA9ICIlcyJcbicgIiRLQVJJWl9MSVNURU4iCiAgICAgICAgICAgIFsgLW4gIiR7S0FSSVpfUkVNT1RFOi19IiBdICYmIHByaW50 \
+    ZiAncmVtb3RlID0gIiVzIlxuJyAiJEtBUklaX1JFTU9URSIKICAgICAgICAgICAgIyBLQVJJWl9GT1JXQVJEPSI0NDM9MTI3LjAu \
+    MC4xOjQ0Myw4MDgwPTEyNy4wLjAuMTo4MCI7IGEgYmFyZSBwb3J0IGxpc3RlbnMgb24gMC4wLjAuMC4KICAgICAgICAgICAgT0xE \
+    SUZTPSRJRlM7IElGUz0nLCcKICAgICAgICAgICAgZm9yIGYgaW4gJHtLQVJJWl9GT1JXQVJEOi19OyBkbwogICAgICAgICAgICAg \
+    ICAgbD0ke2YlJT0qfTsgdD0ke2YjKj19CiAgICAgICAgICAgICAgICBjYXNlICIkbCIgaW4gKjoqKSA7OyAqKSBsPSIwLjAuMC4w \
+    OiRsIiA7OyBlc2FjCiAgICAgICAgICAgICAgICBwcmludGYgJ1tbZm9yd2FyZF1dXG5saXN0ZW4gPSAiJXMiXG50YXJnZXQgPSAi \
+    JXMiXG4nICIkbCIgIiR0IgogICAgICAgICAgICBkb25lCiAgICAgICAgICAgIElGUz0kT0xESUZTCiAgICAgICAgfSA+ICIkQyIK \
+    ICAgIGZpCiAgICBrYXJpeiBjaGVjayAtYyAiJEMiID4mMiB8fCB7IGxvZyAiRVJST1I6IGthcml6IHJlamVjdGVkIHRoZSBjb25m \
+    aWcuIjsgZXhpdCAxOyB9CiAgICBsb2cgImthcml6IHJ1biAtYyAkQyIKICAgICMgUmVzdGFydGVkIG9uIGV4aXQgc28gYSBjcmFz \
+    aGVkIHR1bm5lbCBkb2VzIG5vdCBsZWF2ZSB0aGUgcGFuZWwgc2VydmluZyBhbG9uZS4KICAgIHsgd2hpbGUgOjsgZG8ga2FyaXog \
+    cnVuIC1jICIkQyIgfHwgbG9nICJrYXJpeiBleGl0ZWQgKCQ/KSwgcmVzdGFydGluZyBpbiAycyI7IHNsZWVwIDI7IGRvbmU7IH0g \
+    JgplbHNlCiAgICBsb2cgIktBUklaX1JPTEUgdW5zZXQgLT4gcGFuZWwgb25seSwgbm8gdHVubmVsLiIKZmkKCmNkIC9hcHAKbG9n \
+    ICJzdGFydGluZyAzeC11aSBwYW5lbCIKZXhlYyAvYXBwL3gtdWkK \
+    | base64 -d > /usr/local/bin/entrypoint.sh; \
+    chmod +x /usr/local/bin/entrypoint.sh
+
+ENV XUI_IN_DOCKER="true" \
+    XUI_MAIN_FOLDER="/app" \
+    XUI_ENABLE_FAIL2BAN="false" \
+    XRAY_VMESS_AEAD_FORCED="false"
+
+# Nothing else gets an ENV default on purpose: an unset variable = the
+# binary's own default. Set what you need in your provider's env panel.
+EXPOSE 2053
+VOLUME ["/etc/x-ui"]
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]

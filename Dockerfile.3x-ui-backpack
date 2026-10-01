@@ -1,0 +1,146 @@
+# ===========================================================================
+# 3x-ui panel + BackPack in ONE image.
+#
+# Why one image: PaaS providers that build from a Dockerfile give you a single
+# container, and you only get ports/volumes/env AFTER the build.
+#
+#   backpack ->  started in the background only when BACKPACK_ROLE is set
+#   3x-ui panel ->  0.0.0.0:2053 (map this one in the provider's panel)
+#
+# Leave BACKPACK_ROLE unset and you get a plain 3x-ui panel with no tunnel.
+#
+#   BACKPACK_ROLE=server|client  BACKPACK_TOKEN=...  BACKPACK_TRANSPORT=tcp
+#   server: BACKPACK_BIND=0.0.0.0:8443  BACKPACK_PORTS=443,8080=127.0.0.1:2096
+#   client: BACKPACK_REMOTE=server:8443
+
+# Same deliberate omissions as Dockerfile.3x-ui -- do not "modernise" them:
+#   * no `# syntax=` line  -> never pulls the docker/dockerfile frontend image
+#   * no heredoc, no COPY  -> some builders get the Dockerfile alone, no context
+#   * no Go/Rust/npm build -> every binary comes from a GitHub release
+#
+#   https://github.com/AminMGMT/BackPack   (AGPL-3.0)
+#   https://github.com/MHSanaei/3x-ui            (GPL-3.0)
+# ===========================================================================
+
+# --------------------------- download stage -------------------------------
+FROM debian:bookworm-slim AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl && rm -rf /var/lib/apt/lists/*
+
+# REF / XUI_REF = latest -> newest release of each project. Pin with --build-arg.
+ARG REF=latest
+ARG XUI_REF=latest
+ARG TARGETARCH
+ARG TARGETVARIANT
+
+# No `#` comments inside the RUN below: Docker joins continuation lines into a
+# single shell line, so a comment would swallow everything after it. Note the
+# armv7 rename -- the panel maps GOARCH=arm to "arm32" (internal/xray/process.go),
+# so without it the panel cannot find the Xray binary it just shipped.
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}${TARGETVARIANT:-}" in \
+      amd64)  ARCH=amd64;  TARCH=amd64 ;; \
+      arm64)  ARCH=arm64;  TARCH=arm64 ;; \
+      armv7)  ARCH=armv7;  TARCH=armv7 ;; \
+      *) echo "unsupported arch: ${TARGETARCH:-}${TARGETVARIANT:-}" >&2; exit 1 ;; \
+    esac; \
+    if [ "$XUI_REF" = "latest" ]; then \
+      XUI_URL="https://github.com/MHSanaei/3x-ui/releases/latest/download/x-ui-linux-${ARCH}.tar.gz"; \
+    else \
+      XUI_URL="https://github.com/MHSanaei/3x-ui/releases/download/${XUI_REF}/x-ui-linux-${ARCH}.tar.gz"; \
+    fi; \
+    if [ "$REF" = "latest" ]; then \
+      BP_URL="https://github.com/AminMGMT/BackPack/releases/latest/download/backpack_linux_${TARCH}.tar.gz"; \
+    else \
+      BP_URL="https://github.com/AminMGMT/BackPack/releases/download/${REF}/backpack_linux_${TARCH}.tar.gz"; \
+    fi; \
+    echo "downloading ${BP_URL}"; \
+    mkdir -p /out; \
+    curl -fL --retry 3 -o /tmp/backpack.tar.gz "$BP_URL"; \
+    tar -xzf /tmp/backpack.tar.gz -C /out backpack; \
+    chmod +x /out/backpack; \
+    mkdir -p /out /app; \
+    echo "downloading ${XUI_URL}"; \
+    curl -fL --retry 3 -o /tmp/x-ui.tar.gz "$XUI_URL"; \
+    tar -xzf /tmp/x-ui.tar.gz -C /app --strip-components=1; \
+    rm -f /tmp/x-ui.tar.gz; \
+    chmod +x /app/x-ui /app/bin/xray-linux-* /app/bin/mtg-linux-* 2>/dev/null || true; \
+    if [ "$ARCH" = "armv7" ]; then \
+      mv /app/bin/xray-linux-armv7 /app/bin/xray-linux-arm32; \
+      chmod +x /app/bin/xray-linux-arm32; \
+    fi; \
+    test -s /app/x-ui; \
+    test -s /out/backpack
+
+# ---------------------------- runtime stage -------------------------------
+FROM debian:bookworm-slim
+
+# Network-debugging toolbox (ping, dig, nc, traceroute, netstat, tcpdump) plus
+# what the panel wants: certs, timezone, openssl for the SSL menu, bash+cron
+# for acme.sh renewals.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates iproute2 libcap2-bin tini \
+        iputils-ping dnsutils netcat-openbsd traceroute net-tools tcpdump \
+        procps curl wget nano vim-tiny less \
+        tzdata openssl bash cron \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /out/backpack /usr/local/bin/backpack
+COPY --from=build /app/ /app/
+
+# The panel resolves its Xray binary as "bin/xray-linux-*" relative to the
+# working directory, so WORKDIR must be /app. The DB lives in /etc/x-ui.
+RUN mkdir -p /data /etc/x-ui /var/log/x-ui
+WORKDIR /app
+
+# entrypoint.sh, base64-encoded so this Dockerfile needs no heredoc support
+# and no external frontend. Decode it to read/edit:
+#   docker run --rm --entrypoint sh IMAGE -c 'cat /usr/local/bin/entrypoint.sh'
+RUN set -eu; printf '%s' \
+    IyEvYmluL3NoCiMgM3gtdWkgcGFuZWwgKyBCYWNrUGFjayB0dW5uZWwgaW4gb25lIGNvbnRhaW5lci4KIwojICAgYmFja3BhY2sg \
+    LT4gc3RhcnRzIG9ubHkgd2hlbiBCQUNLUEFDS19ST0xFIGlzIHNldCwgaW4gdGhlIGJhY2tncm91bmQsIHJlc3RhcnRlZCBvbiBl \
+    eGl0LgojICAgeC11aSAgICAgLT4gYWx3YXlzIHJ1bnMsIGluIHRoZSBmb3JlZ3JvdW5kIChpdCBpcyBQSUQgMSdzIGNoaWxkKS4K \
+    IwojIENvbmZpZyBpcyBnZW5lcmF0ZWQgZnJvbSBCQUNLUEFDS18qIHZhcmlhYmxlcy4gRHJvcCBhIGZ1bGwgL2RhdGEvYmFja3Bh \
+    Y2sudG9tbCBvbiB0aGUKIyB2b2x1bWUgdG8gdXNlIHlvdXIgb3duIGZpbGUgaW5zdGVhZCAodGhlIHdpemFyZCdzIGZpbGVzIGFy \
+    ZSBwbGFpbiBUT01MKS4Kc2V0IC1ldQoKbG9nKCkgeyBwcmludGYgJ1tlbnRyeXBvaW50XSAlc1xuJyAiJCoiID4mMjsgfQoKaWYg \
+    WyAtZiAvZGF0YS9lbnRyeXBvaW50LnNoIF0gJiYgWyAiJHtVU0VfVk9MVU1FX0VOVFJZUE9JTlQ6LXRydWV9IiA9ICJ0cnVlIiBd \
+    OyB0aGVuCiAgICBsb2cgInJ1bm5pbmcgL2RhdGEvZW50cnlwb2ludC5zaCBmcm9tIHRoZSB2b2x1bWUiCiAgICBleGVjIC9iaW4v \
+    c2ggL2RhdGEvZW50cnlwb2ludC5zaCAiJEAiCmZpCgppZiBbICIkIyIgLWd0IDAgXTsgdGhlbgogICAgZXhlYyAiJEAiCmZpCgpp \
+    ZiBbIC1uICIke0JBQ0tQQUNLX1JPTEU6LX0iIF07IHRoZW4KICAgIEM9L2V0Yy9iYWNrcGFjay9jb250YWluZXIudG9tbAogICAg \
+    bWtkaXIgLXAgL2V0Yy9iYWNrcGFjawogICAgaWYgWyAtZiAvZGF0YS9iYWNrcGFjay50b21sIF07IHRoZW4KICAgICAgICBDPS9k \
+    YXRhL2JhY2twYWNrLnRvbWwKICAgICAgICBsb2cgInVzaW5nIC9kYXRhL2JhY2twYWNrLnRvbWwiCiAgICBlbHNlCiAgICAgICAg \
+    WyAtbiAiJHtCQUNLUEFDS19UT0tFTjotfSIgXSB8fCB7IGxvZyAiRVJST1I6IHNldCBCQUNLUEFDS19UT0tFTiAoc2FtZSB2YWx1 \
+    ZSBvbiBib3RoIGVuZHMpLiI7IGV4aXQgMTsgfQogICAgICAgIFQ9IiR7QkFDS1BBQ0tfVFJBTlNQT1JUOi10Y3B9IgogICAgICAg \
+    IGNhc2UgIiRCQUNLUEFDS19ST0xFIiBpbgogICAgICAgICAgICBzZXJ2ZXIpCiAgICAgICAgICAgICAgICAjIFRoZSBJcmFuIGVu \
+    ZDogbGlzdGVucyBmb3IgdGhlIGNsaWVudCwgZXhwb3NlcyB0aGUgZm9yd2FyZGVkIHBvcnRzLgogICAgICAgICAgICAgICAgIyBC \
+    QUNLUEFDS19QT1JUUz0iNDQzLDgwODA9MTI3LjAuMC4xOjIwOTYiCiAgICAgICAgICAgICAgICBQPSIiCiAgICAgICAgICAgICAg \
+    ICBPTERJRlM9JElGUzsgSUZTPScsJwogICAgICAgICAgICAgICAgZm9yIHAgaW4gJHtCQUNLUEFDS19QT1JUUzotfTsgZG8gUD0i \
+    JHtQfSR7UDorLCB9XCIkcFwiIjsgZG9uZQogICAgICAgICAgICAgICAgSUZTPSRPTERJRlMKICAgICAgICAgICAgICAgIHByaW50 \
+    ZiAnW3NlcnZlcl1cbnRyYW5zcG9ydCA9ICIlcyJcbmJpbmRfYWRkciA9ICIlcyJcbnRva2VuID0gIiVzIlxucG9ydHMgPSBbJXNd \
+    XG4nIFwKICAgICAgICAgICAgICAgICAgICAiJFQiICIke0JBQ0tQQUNLX0JJTkQ6LTAuMC4wLjA6ODQ0M30iICIkQkFDS1BBQ0tf \
+    VE9LRU4iICIkUCIgPiAiJEMiIDs7CiAgICAgICAgICAgIGNsaWVudCkKICAgICAgICAgICAgICAgICMgVGhlIGtoYXJlaiBlbmQ6 \
+    IGRpYWxzIHRoZSBzZXJ2ZXIuCiAgICAgICAgICAgICAgICBbIC1uICIke0JBQ0tQQUNLX1JFTU9URTotfSIgXSB8fCB7IGxvZyAi \
+    RVJST1I6IHNldCBCQUNLUEFDS19SRU1PVEUgKHNlcnZlciBJUDpwb3J0KS4iOyBleGl0IDE7IH0KICAgICAgICAgICAgICAgIHBy \
+    aW50ZiAnW2NsaWVudF1cbnRyYW5zcG9ydCA9ICIlcyJcbnJlbW90ZV9hZGRyID0gIiVzIlxudG9rZW4gPSAiJXMiXG4nIFwKICAg \
+    ICAgICAgICAgICAgICAgICAiJFQiICIkQkFDS1BBQ0tfUkVNT1RFIiAiJEJBQ0tQQUNLX1RPS0VOIiA+ICIkQyIgOzsKICAgICAg \
+    ICAgICAgKikgbG9nICJFUlJPUjogQkFDS1BBQ0tfUk9MRSBtdXN0IGJlIHNlcnZlciBvciBjbGllbnQuIjsgZXhpdCAxIDs7CiAg \
+    ICAgICAgZXNhYwogICAgZmkKICAgIGxvZyAiYmFja3BhY2sgLWMgJEMiCiAgICAjIFJlc3RhcnRlZCBvbiBleGl0IHNvIGEgY3Jh \
+    c2hlZCB0dW5uZWwgZG9lcyBub3QgbGVhdmUgdGhlIHBhbmVsIHNlcnZpbmcgYWxvbmUuCiAgICB7IHdoaWxlIDo7IGRvIGJhY2tw \
+    YWNrIC1jICIkQyIgfHwgbG9nICJiYWNrcGFjayBleGl0ZWQgKCQ/KSwgcmVzdGFydGluZyBpbiAycyI7IHNsZWVwIDI7IGRvbmU7 \
+    IH0gJgplbHNlCiAgICBsb2cgIkJBQ0tQQUNLX1JPTEUgdW5zZXQgLT4gcGFuZWwgb25seSwgbm8gdHVubmVsLiIKZmkKCmNkIC9h \
+    cHAKbG9nICJzdGFydGluZyAzeC11aSBwYW5lbCIKZXhlYyAvYXBwL3gtdWkK \
+    | base64 -d > /usr/local/bin/entrypoint.sh; \
+    chmod +x /usr/local/bin/entrypoint.sh
+
+ENV XUI_IN_DOCKER="true" \
+    XUI_MAIN_FOLDER="/app" \
+    XUI_ENABLE_FAIL2BAN="false" \
+    XRAY_VMESS_AEAD_FORCED="false"
+
+# Nothing else gets an ENV default on purpose: an unset variable = the
+# binary's own default. Set what you need in your provider's env panel.
+EXPOSE 2053
+VOLUME ["/etc/x-ui"]
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
