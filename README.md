@@ -1,4 +1,4 @@
-# xui-spoof
+# 3x-wrench
 
 [3x-ui](https://github.com/MHSanaei/3x-ui) panel plus one censorship-bypass tool per image,
 built for container platforms (PaaS) that give you a single container. `linux/amd64` and

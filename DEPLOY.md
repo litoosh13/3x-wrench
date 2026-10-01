@@ -7,7 +7,7 @@ ghcr.io/litoosh13/xui-spoof:latest
 3x-ui panel and SNI-Spoofing-Go in one container, published for `linux/amd64` and `linux/arm64` by
 [.github/workflows/image.yml](.github/workflows/image.yml).
 
-Package page: <https://github.com/litoosh13/xui-spoof/pkgs/container/xui-spoof>
+Package page: <https://github.com/litoosh13/3x-wrench/pkgs/container/xui-spoof>
 
 Public image, so no login or pull secret is needed anywhere.
 
