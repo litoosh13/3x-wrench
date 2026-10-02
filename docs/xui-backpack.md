@@ -27,6 +27,7 @@ Nothing starts until `BACKPACK_ROLE` is set.
 | `BACKPACK_BIND` | server | Tunnel listen address. Default `0.0.0.0:8443` |
 | `BACKPACK_PORTS` | server | Public ports to expose: `443,8080=127.0.0.1:2096`. `443` means the client hands it to its own `127.0.0.1:443`; `A=host:B` sends it to `host:B` |
 | `XUI_ENABLE` | no | `true` (default) runs the 3x-ui panel. `false` turns it off, and the tunnel becomes the only process (the container exits with an error if no tunnel is configured too) |
+| `BACKPACK_ACCEPT_UDP` | server | `true` also carries **UDP** on the exposed ports, over the tunnel (even a TCP transport). Default off. See below |
 | `BACKPACK_REMOTE` | client | Server address, `IP:port`. The port must match the server's `BACKPACK_BIND` |
 
 For anything else (fallback transports, TLS certificates, tuning, UDP forwarding, `wss`
@@ -93,6 +94,48 @@ Only the transport name is generated from the variable. Transport-specific setti
 A wrong token on `stealth` gets no reply at all: it looks exactly like a dead port, with
 no error on the server. If it won't connect, compare the token and the transport on both
 ends first.
+
+## Sending UDP through the tunnel
+
+By default a forwarded port carries TCP only. Set `BACKPACK_ACCEPT_UDP=true` on the Iran
+container and every port in `BACKPACK_PORTS` carries UDP **as well**, wrapped inside the
+tunnel's own connection. It works on any transport, including plain `tcp`, so no UDP
+transport is needed. The abroad VPS needs no change.
+
+Dummy example: a UDP service (a Shadowsocks or WireGuard-style listener) on the abroad VPS
+at `127.0.0.1:1004`, reached by users on UDP `2087` of the Iran container.
+
+Iran container:
+
+```
+BACKPACK_ROLE=server
+BACKPACK_TOKEN=4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36
+BACKPACK_BIND=0.0.0.0:8443
+BACKPACK_PORTS=2087=127.0.0.1:1004
+BACKPACK_ACCEPT_UDP=true
+```
+
+Abroad VPS, `/etc/backpack/mytunnel.toml`: nothing to change.
+
+```toml
+[client]
+remote_addr = "203.0.113.10:30001"
+transport = "tcp"
+token = "4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36"
+```
+
+Things to know:
+- **The platform must expose the user port for UDP.** Mapping container `2087` as TCP only
+  is not enough: add a separate **UDP** mapping for container `2087` (e.g. external
+  `30002/udp`). If TCP works and UDP doesn't, this is the first thing to check.
+- **The service on the abroad VPS must listen on UDP** at the target (`127.0.0.1:1004/udp`).
+- **Every port in `BACKPACK_PORTS` gets UDP too.** A web port would then also relay a
+  browser's QUIC (UDP 443), and on pooled transports (`ws`, `wss`, the mux family) those
+  long-lived flows can starve the TCP forwards. Turn it on only for tunnels that need it.
+- A UDP flow ends after 60 seconds of silence.
+- UDP rides inside a TCP connection, so a lost packet delays the ones behind it. Fine for
+  DNS and most proxies, poor for games and voice. Use a UDP transport (`kcp`, `quic`) for
+  those, if the platform forwards UDP on the tunnel port.
 
 ## Examples
 
@@ -313,6 +356,6 @@ in a container; everything is set through the variables above.
 
 ## Tested
 
-Server ↔ client with `tcp`, with `stealth` (a wrong token gets no reply), and with `ws` behind a TLS-terminating nginx (client dialling
+Server ↔ client with `tcp`, with `stealth` (a wrong token gets no reply), with `BACKPACK_ACCEPT_UDP=true` (UDP datagram crossed a `tcp` tunnel, and was not carried with it off), and with `ws` behind a TLS-terminating nginx (client dialling
 `wss` with `simple_auth`), traffic through a forwarded port confirmed. Other transports
 and a real platform edge were not exercised.
