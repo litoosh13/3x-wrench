@@ -59,39 +59,86 @@ For anything the variables don't cover, put a complete config at `/data/kariz.to
 
 The side that only dials opens nothing for the tunnel.
 
-## Example: reverse tunnel
+## Examples
 
-Entry (the server users reach):
+### The dummy values used below
+
+Every address, port and secret in the examples is made up. Swap in your own.
+
+| What | Dummy value |
+|---|---|
+| Iran container, public IP | `203.0.113.10` |
+| Tunnel port: container `3080` → platform external | `30001` |
+| User port: container `2087` → platform external | `30002` |
+| Platform HTTPS hostname (maps to container `8080`) | `tunnel.example.com` |
+| Abroad VPS IP | `198.51.100.7` |
+| VLESS inbound on the abroad VPS | port `1004` |
+| Shared token (generate your own: `openssl rand -hex 24`) | `4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36` |
+
+### A. Through raw TCP ports
+
+```
+user -> 203.0.113.10:30002 -> Iran container -> tunnel (abroad VPS dials out) -> 198.51.100.7 127.0.0.1:1004
+```
+
+**Iran container** (this image, `entry`). Env variables:
 
 ```
 KARIZ_ROLE=entry
-KARIZ_TOKEN=<token>
+KARIZ_TOKEN=4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36
 KARIZ_LISTEN=0.0.0.0:3080
-KARIZ_FORWARD=443=127.0.0.1:443
+KARIZ_FORWARD=2087=127.0.0.1:1004
 ```
 
-Exit (where the 3x-ui inbound on `:443` lives):
+On the platform expose two TCP ports: container `3080` (→ `30001`) and container `2087`
+(→ `30002`). `2087=127.0.0.1:1004` means: listen on `2087` here, deliver to
+`127.0.0.1:1004` on the abroad VPS.
+
+**Abroad VPS** (`exit`). Install Kariz natively, then write `/etc/kariz/config.toml`:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Erfan-XRay/Kariz/main/scripts/kariz.sh)
+```
+
+```toml
+role = "exit"
+mode = "reverse"
+
+[tunnel]
+transport = "tcpmux"
+remote = "203.0.113.10:30001"
+token = "4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36"
+```
+
+```bash
+kariz check -c /etc/kariz/config.toml
+systemctl enable --now kariz
+```
+
+**Client link** (what users import). Take the abroad inbound's link and change only the
+address and port:
 
 ```
-KARIZ_ROLE=exit
-KARIZ_TOKEN=<same token>
-KARIZ_REMOTE=<entry public host>:<entry tunnel port>
+vless://11111111-2222-3333-4444-555555555555@203.0.113.10:30002?type=tcp&security=reality&sni=www.example.com&fp=chrome&pbk=DUMMY_PUBLIC_KEY&sid=ab12cd34#my-vless
 ```
 
-Users hit `entry:443`, which arrives at `127.0.0.1:443` on the exit.
+UUID, `security`, `sni`, `pbk` and `sid` stay exactly as on the abroad inbound.
 
-## Behind the platform's HTTPS hostname
+### B. Through the platform's HTTPS hostname
 
-Many platforms give the container a hostname like `tunnel.example.com` and map it to one
+Many platforms give the container a hostname (`tunnel.example.com`) mapped to one
 container port. The platform terminates TLS and passes **plain HTTP** to the container.
-WebSocket is HTTP, so the tunnel can ride it, and the container (the Iran side) never
-needs a raw TCP port for the tunnel.
+WebSocket is HTTP, so the tunnel can ride it and needs no raw TCP port.
 
-Iran container (`entry`; map the hostname to port `8080` in the platform):
+```
+abroad VPS --wss/443--> edge (TLS ends) --plain ws--> Iran container :8080
+```
+
+**Iran container** (map `tunnel.example.com` to container port `8080`):
 
 ```
 KARIZ_ROLE=entry
-KARIZ_TOKEN=<token>
+KARIZ_TOKEN=4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36
 KARIZ_TRANSPORT=ws
 KARIZ_LISTEN=0.0.0.0:8080
 KARIZ_WS_PATH=/api/v1/stream
@@ -99,7 +146,7 @@ KARIZ_WS_HOST=tunnel.example.com
 KARIZ_FORWARD=2087=127.0.0.1:1004
 ```
 
-Abroad VPS (`exit`), which dials the hostname over `wss`:
+**Abroad VPS** (`exit`), `/etc/kariz/config.toml`. It dials the hostname over `wss`:
 
 ```toml
 role = "exit"
@@ -108,21 +155,22 @@ mode = "reverse"
 [tunnel]
 transport = "wss"
 remote = "tunnel.example.com:443"
-token = "<same token>"
+token = "4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36"
 
 [tunnel.ws]
 path = "/api/v1/stream"
 host = "tunnel.example.com"
 ```
 
+The user port still needs its own raw TCP mapping (container `2087` → `30002`); the
+client link is the same as in example A.
+
 Notes:
 - The container side is plain `ws`; only the dialing side says `wss`. That is intended.
-- A hostname maps to **one** container port. Point it at the tunnel port; it then no
-  longer reaches the panel.
-- The hostname carries HTTP only. The forwarded user port (`2087`) still needs its own
-  raw TCP mapping.
-- Mux stays on (the default), because its pings stop the edge cutting the connection as
-  idle. Keep `keepalive` at or below ~90 s.
+- A hostname maps to **one** container port. Pointed at the tunnel, it no longer reaches
+  the panel.
+- Mux stays on (the default); its pings stop the edge cutting the connection as idle.
+  Keep `keepalive` at or below ~90 s.
 
 ## Check it
 

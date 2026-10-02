@@ -24,12 +24,22 @@ Tags: `latest` (newest `main`), `vX.Y.Z` (git tag), `sha-abc1234` (pin for repro
 
 ## Quick start
 
+Dummy example: an Iran-side Kariz entry that publishes port `2087` and delivers it to
+`127.0.0.1:1004` on the abroad server. Every value here is made up.
+
 ```bash
-docker run -d --name xui --cap-add=NET_RAW -p 2053:2053 -v xui-data:/etc/x-ui \
+docker run -d --name xui --cap-add=NET_RAW \
+  -p 2053:2053 -p 3080:3080 -p 2087:2087 \
+  -v xui-data:/etc/x-ui \
+  -e KARIZ_ROLE=entry \
+  -e KARIZ_TOKEN=4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36 \
+  -e KARIZ_LISTEN=0.0.0.0:3080 \
+  -e KARIZ_FORWARD=2087=127.0.0.1:1004 \
   ghcr.io/litoosh13/xui-kariz:latest
 ```
 
-Then add the variables from the image's guide above.
+Panel on `:2053` (`admin` / `admin`, change it). The matching abroad side and the same
+example for BackPack and the spoofer are in each image's guide above.
 
 ## Building
 

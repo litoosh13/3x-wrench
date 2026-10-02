@@ -102,7 +102,7 @@ Check a platform before debugging anything else. The image ships `sni-check` for
 exactly this — run it in the started container:
 
 ```bash
-docker exec <name> sni-check
+docker exec xui-spoof sni-check
 ```
 
 ```
@@ -342,7 +342,7 @@ and not just TCP — in the container:
 nc -u -l 36712
 ```
 
-then send it something from outside with `nc -u <host> <external-port>`. Nothing arriving
+then send it something from outside with `nc -u 203.0.113.10 34567` (dummy host and external port). Nothing arriving
 means no certificate will help, and the failure will not look like a TLS error.
 
 ---

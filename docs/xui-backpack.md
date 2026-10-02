@@ -49,66 +49,85 @@ on a filtered link.
 
 The client opens nothing for the tunnel.
 
-## Example: reach a VLESS inbound on your abroad server
+## Examples
 
-You have a VPS abroad (Hetzner, say) with a VLESS inbound on port `1004`, and you want
-users to reach it through the Iran container. All addresses and ports below are dummies.
+### The dummy values used below
+
+Every address, port and secret in the examples is made up. Swap in your own.
+
+| What | Dummy value |
+|---|---|
+| Iran container, public IP | `203.0.113.10` |
+| Tunnel port: container `8443` → platform external | `30001` |
+| User port: container `2087` → platform external | `30002` |
+| Platform HTTPS hostname (maps to container `8080`) | `tunnel.example.com` |
+| Abroad VPS IP | `198.51.100.7` |
+| VLESS inbound on the abroad VPS | port `1004` |
+| Shared token (generate your own: `openssl rand -hex 24`) | `4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36` |
+
+### A. Through raw TCP ports
 
 ```
-user -> Iran container :2087 -> tunnel (the abroad VPS dials out) -> abroad VPS 127.0.0.1:1004
+user -> 203.0.113.10:30002 -> Iran container -> tunnel (abroad VPS dials out) -> 198.51.100.7 127.0.0.1:1004
 ```
 
-**1. Iran container** (this image, the `server` role):
+**Iran container** (this image, `server`). Env variables:
 
 ```
 BACKPACK_ROLE=server
-BACKPACK_TOKEN=<long random secret>
+BACKPACK_TOKEN=4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36
 BACKPACK_BIND=0.0.0.0:8443
 BACKPACK_PORTS=2087=127.0.0.1:1004
 ```
 
-`2087=127.0.0.1:1004` means: listen on `2087` here, deliver to `127.0.0.1:1004` on the
-abroad VPS. Write `BACKPACK_PORTS=1004` to use the same number on both sides.
+On the platform expose two TCP ports: container `8443` (→ `30001`) and container `2087`
+(→ `30002`). `2087=127.0.0.1:1004` means: listen on `2087` here, deliver to
+`127.0.0.1:1004` on the abroad VPS. Write `BACKPACK_PORTS=1004` to use the same number
+on both sides.
 
-**2. Platform ports.** Expose two TCP ports and note the external number the platform
-assigns to each. A tunnel port and a user port can't be the same one.
-
-| Container port | Example external | Used for |
-|---|---|---|
-| `8443` | `203.0.113.10:30001` | the tunnel, dialled by the abroad VPS |
-| `2087` | `203.0.113.10:30002` | users |
-
-**3. Abroad VPS** (the `client` role). It's a normal server with systemd, so install
-BackPack natively rather than in a container, so `127.0.0.1:1004` is the real inbound:
+**Abroad VPS** (`client`). It's a normal server with systemd, so install BackPack
+natively; that way `127.0.0.1:1004` is the real inbound:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/AminMGMT/BackPack/main/install.sh)
 sudo backpack
 ```
 
-In the wizard choose the kharej/client setup, the same transport (`tcp`), the same
-token, and the Iran **external** tunnel address: `203.0.113.10:30001`. It needs no
-inbound port, only outbound access to that address.
+In the wizard choose the kharej/client setup, transport `tcp`, token
+`4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36`, and server `203.0.113.10:30001`. The generated file
+(`/etc/backpack/mytunnel.toml`) ends up like:
 
-**4. Client link.** Take the VLESS link from the abroad inbound and change only the
-address and port to `203.0.113.10:30002`. UUID, Reality/TLS settings and SNI stay the
-same; the traffic passes through as raw TCP.
+```toml
+[client]
+remote_addr = "203.0.113.10:30001"
+transport = "tcp"
+token = "4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36"
+```
 
-Also check on the abroad VPS that the inbound listens on `0.0.0.0` or `127.0.0.1`
-(`ss -ltnp | grep 1004`), not only on its public IP.
+It needs no inbound port, only outbound access to `203.0.113.10:30001`. Also check the
+inbound listens on `0.0.0.0` or `127.0.0.1` (`ss -ltnp | grep 1004`), not only on its
+public IP.
+
+**Client link** (what users import). Take the abroad inbound's link and change only the
+address and port:
+
+```
+vless://11111111-2222-3333-4444-555555555555@203.0.113.10:30002?type=tcp&security=reality&sni=www.example.com&fp=chrome&pbk=DUMMY_PUBLIC_KEY&sid=ab12cd34#my-vless
+```
+
+UUID, `security`, `sni`, `pbk` and `sid` stay exactly as on the abroad inbound.
 
 **Don't** use the abroad VPS's own IP in the client link: that skips the tunnel.
 
-## Behind a CDN or the platform's HTTPS hostname
+### B. Through a CDN or the platform's HTTPS hostname
 
-Use this when users or the abroad server can't reach the container on a raw TCP port, but
-the platform (or a CDN such as Cloudflare) gives it an HTTPS hostname like
-`tunnel.example.com`. The edge terminates TLS and passes **plain HTTP** to one container
-port, and WebSocket is HTTP, so the tunnel can ride it. Tested with nginx standing in for
-the edge.
+Use this when the container has no raw TCP port for the tunnel but the platform (or a CDN
+such as Cloudflare) gives it an HTTPS hostname, `tunnel.example.com`. The edge terminates
+TLS and passes **plain HTTP** to one container port, and WebSocket is HTTP, so the tunnel
+can ride it. Tested with nginx standing in for the edge.
 
 ```
-abroad VPS --wss/443--> edge (TLS ends here) --plain ws--> Iran container :8080
+abroad VPS --wss/443--> edge (TLS ends) --plain ws--> Iran container :8080
 ```
 
 **The two ends use different transports. This is intended:**
@@ -118,31 +137,25 @@ abroad VPS --wss/443--> edge (TLS ends here) --plain ws--> Iran container :8080
 | Iran container (`server`) | `ws` | The edge already removed the TLS, so the container sees plain HTTP |
 | Abroad VPS (`client`) | `wss` + `simple_auth = true` | It needs TLS to reach the edge on 443 |
 
-`simple_auth` is needed because the edge terminates TLS, which breaks BackPack's
-session-bound proof. It sends the raw token to the edge, so use a long random token
-(`openssl rand -hex 24`) and only an edge you trust. Where that matters, use
-[Kariz](xui-kariz.md#behind-the-platforms-https-hostname), whose traffic stays encrypted
-end to end.
-
-**Iran container** (map the hostname to container port `8080` in the platform):
+**Iran container** (map `tunnel.example.com` to container port `8080`):
 
 ```
 BACKPACK_ROLE=server
-BACKPACK_TOKEN=<long random secret>
+BACKPACK_TOKEN=4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36
 BACKPACK_TRANSPORT=ws
 BACKPACK_BIND=0.0.0.0:8080
 BACKPACK_PORTS=2087=127.0.0.1:1004
 ```
 
-**Abroad VPS** (`client`). The setup wizard may insist both ends use the same transport,
-so edit the generated file under `/etc/backpack/` and restart. The file says not to edit
-it while the service runs, so stop it first:
+**Abroad VPS** (`client`). The wizard may insist both ends use the same transport, so edit
+the generated file and restart. The file says not to edit it while the service runs, so
+stop it first (the tunnel name here is `mytunnel`):
 
 ```bash
-systemctl stop backpack-<name>
-nano /etc/backpack/<name>.toml
-systemctl start backpack-<name>
-journalctl -u backpack-<name> -f
+systemctl stop backpack-mytunnel
+nano /etc/backpack/mytunnel.toml
+systemctl start backpack-mytunnel
+journalctl -u backpack-mytunnel -f
 ```
 
 ```toml
@@ -150,14 +163,23 @@ journalctl -u backpack-<name> -f
 remote_addr = "tunnel.example.com:443"
 transport = "wss"
 simple_auth = true
-token = "<same long random secret>"
-# edge_ip = "198.51.100.7"   # optional: dial this edge/CDN IP, still using the hostname
+token = "4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36"
+# edge_ip = "192.0.2.50"   # optional: dial this edge/CDN IP, still using the hostname
 ```
+
+`simple_auth` is needed because the edge terminates TLS, which breaks BackPack's
+session-bound proof. It sends the raw token to the edge, so use a long random token and
+only an edge you trust. Where that matters, use
+[Kariz](xui-kariz.md#b-through-the-platforms-https-hostname), whose traffic stays encrypted
+end to end.
 
 `edge_ip` makes the client connect to a specific edge IP while still sending the hostname
 for TLS and routing. Use it when the hostname's own DNS answer is blocked or you want a
 clean CDN address. For Cloudflare the port must be one it proxies (443, 2053, 2083, 2087,
 2096, 8443) and the record must be proxied.
+
+The user port still needs its own raw TCP mapping (container `2087` → `30002`); the client
+link is the same as in example A.
 
 **What goes wrong**
 
