@@ -172,6 +172,64 @@ Notes:
 - Mux stays on (the default); its pings stop the edge cutting the connection as idle.
   Keep `keepalive` at or below ~90 s.
 
+### C. Users connect to the platform hostname on port 443
+
+Here the **tunnel** stays on raw TCP (as in example A) and the platform hostname serves
+the **users**: `tunnel.example.com:443` in the VLESS link reaches the abroad inbound
+through the tunnel. The platform ends TLS at its edge and passes plain HTTP to the
+container.
+
+```
+user --TLS/443--> edge (TLS ends) --plain HTTP--> Iran container :2087 --tunnel--> 198.51.100.7 127.0.0.1:1004
+```
+
+1. **Tunnel:** exactly as example A (Iran container + abroad VPS over
+   `203.0.113.10:30001`).
+2. **Hostname:** in the platform, map `tunnel.example.com` to container port `2087`, the
+   forwarded user port, not to a tunnel port.
+3. **Iran container:** unchanged from example A:
+
+```
+KARIZ_ROLE=entry
+KARIZ_TOKEN=4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36
+KARIZ_LISTEN=0.0.0.0:3080
+KARIZ_FORWARD=2087=127.0.0.1:1004
+```
+
+4. **Abroad VPS, 3x-ui inbound.** It must speak HTTP, because TLS ends at the edge:
+
+| Field | Value |
+|---|---|
+| Protocol | VLESS |
+| Port | `1004` |
+| Listen | `0.0.0.0` (or `127.0.0.1`) |
+| Network | WebSocket |
+| Path | `/ws` |
+| Security | **none** (no TLS, no Reality) |
+| Client UUID | `11111111-2222-3333-4444-555555555555` |
+
+5. **Client link.** The address is the platform hostname and the port is `443`:
+
+```
+vless://11111111-2222-3333-4444-555555555555@tunnel.example.com:443?type=ws&security=tls&sni=tunnel.example.com&host=tunnel.example.com&path=%2Fws&encryption=none#via-tunnel
+```
+
+`security=tls` is the user's TLS to the edge. UUID and `path` must match the inbound.
+
+**Works:** WebSocket, `httpupgrade` and `xhttp` inbounds. **Doesn't:** Reality, XTLS
+Vision, Trojan-over-TLS or anything else that needs raw TLS end to end, because the edge
+ends TLS. gRPC usually fails too, as the edge speaks HTTP/1.1 to the container.
+
+**Trade-offs**
+- The platform's edge sees your users' traffic: it ends TLS, and VLESS adds no encryption
+  of its own.
+- Kariz encrypts the Iran-to-abroad leg, so only the edge sees the user traffic in clear.
+- A hostname maps to **one** container port, so it is used up by the user port here. The
+  tunnel has to run on its own raw TCP port (`30001`). If the platform gives you only the
+  hostname, you can't also use it for users.
+- Built from parts tested separately (edge to container, and the tunnel to its target);
+  the whole chain was not run together.
+
 ## Check it
 
 Container logs should show `mux session ... established`. Or in the container:
