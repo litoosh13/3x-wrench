@@ -60,6 +60,47 @@ For anything the variables don't cover, put a complete config at `/data/kariz.to
 
 The side that only dials opens nothing for the tunnel.
 
+## Using another transport
+
+The container defaults to `tcpmux`, which is already encrypted. To use another transport,
+**set it on the Iran container** with `KARIZ_TRANSPORT`, and set the **same transport on
+the abroad VPS**. The two ends must match (the one exception is the HTTPS-hostname
+setup, example B, where the abroad side dials `wss` and the container serves plain `ws`).
+
+Dummy example, plain `tcp` instead of `tcpmux`:
+
+Iran container:
+
+```
+KARIZ_ROLE=entry
+KARIZ_TOKEN=4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36
+KARIZ_TRANSPORT=tcp
+KARIZ_LISTEN=0.0.0.0:3080
+KARIZ_FORWARD=2087=127.0.0.1:1004
+```
+
+Abroad VPS, `/etc/kariz/config.toml`:
+
+```toml
+role = "exit"
+mode = "reverse"
+
+[tunnel]
+transport = "tcp"
+remote = "203.0.113.10:30001"
+token = "4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36"
+```
+
+| `KARIZ_TRANSPORT` | Use when | Notes |
+|---|---|---|
+| `tcpmux` (default) | almost always | Encrypted, many streams over a few connections |
+| `tcp` | you want one TCP connection per user connection | Encrypted too |
+| `ws` / `wss` | behind a CDN / HTTPS hostname | Set `KARIZ_WS_PATH` and `KARIZ_WS_HOST`; see example B |
+| `kcp`, `quic`, `udp` | lossy links | The platform must forward **UDP** on the tunnel port |
+
+Settings a transport needs beyond its name (certificates, `wss` pinning, QUIC options)
+go in a full `/data/kariz.toml` on a volume.
+
 ## Examples
 
 ### The dummy values used below

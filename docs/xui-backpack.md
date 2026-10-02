@@ -50,6 +50,50 @@ on a filtered link.
 
 The client opens nothing for the tunnel.
 
+## Using another transport (Stealth, WSS, KCP...)
+
+The container defaults to plain `tcp`. To use any other transport, **set it on the Iran
+container** with `BACKPACK_TRANSPORT`, and set the **same transport on the abroad VPS**.
+The two ends must match, or the listener only sees noise.
+
+Dummy example, TCP + Stealth on a bare IP (no certificate, no domain, nothing else to set):
+
+Iran container:
+
+```
+BACKPACK_ROLE=server
+BACKPACK_TOKEN=4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36
+BACKPACK_TRANSPORT=stealth
+BACKPACK_BIND=0.0.0.0:8443
+BACKPACK_PORTS=2087=127.0.0.1:1004
+```
+
+Abroad VPS, `/etc/backpack/mytunnel.toml` (stop the service first, restart after):
+
+```toml
+[client]
+remote_addr = "203.0.113.10:30001"
+transport = "stealth"
+token = "4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36"
+```
+
+| `BACKPACK_TRANSPORT` | Use when | Notes |
+|---|---|---|
+| `tcp` (default) | clean link | Token sent in clear, no payload encryption |
+| `stealth` | link is DPI-filtered | Looks like random bytes. Nothing else to configure |
+| `tcpmux` | many small connections | Plain TCP, multiplexed |
+| `ws`, `wsmux` | behind a CDN / HTTPS hostname | See example B |
+| `wss`, `wssmux` | CDN in front, or must look like HTTPS | Needs a certificate; use a `/data/backpack.toml` |
+| `kcp`, `quic`, `udp` | lossy links | The platform must forward **UDP** on the tunnel port |
+| `pck`, `xdi` | | **Not usable in this image**: they need `iptables` / ICMP rules it doesn't ship |
+
+Only the transport name is generated from the variable. Transport-specific settings
+(certificates, domains, tuning) go in a full `/data/backpack.toml` on a volume.
+
+A wrong token on `stealth` gets no reply at all: it looks exactly like a dead port, with
+no error on the server. If it won't connect, compare the token and the transport on both
+ends first.
+
 ## Examples
 
 ### The dummy values used below
@@ -269,6 +313,6 @@ in a container; everything is set through the variables above.
 
 ## Tested
 
-Server ↔ client with `tcp`, and with `ws` behind a TLS-terminating nginx (client dialling
+Server ↔ client with `tcp`, with `stealth` (a wrong token gets no reply), and with `ws` behind a TLS-terminating nginx (client dialling
 `wss` with `simple_auth`), traffic through a forwarded port confirmed. Other transports
 and a real platform edge were not exercised.
