@@ -74,6 +74,7 @@ internal IP) and ~24 fingerprint/fragment rows. Copy a passing row into these, t
 |---|---|---|
 | `SPOOF_PORT` | `2020` | Changing the spoofer's loopback port |
 | `XUI_PORT` | `2053` | The provider already uses 2053 |
+| `XUI_ENABLE` | `true` | `false` turns the panel off and runs only the spoofer (needs `CONNECT`; otherwise the container exits with an error) |
 | `TZ` | UTC | `Asia/Tehran` for local timestamps in panel logs |
 
 ### Do not set

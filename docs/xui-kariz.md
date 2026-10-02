@@ -30,6 +30,7 @@ Nothing starts until `KARIZ_ROLE` is set.
 | `KARIZ_FORWARD` | entry only | `443=127.0.0.1:443,8080=127.0.0.1:80`: public port on the entry `=` target dialled from the exit. A bare port listens on `0.0.0.0` |
 | `KARIZ_WS_PATH` | ws/wss | WebSocket path, e.g. `/api/v1/stream`. Must match on both sides |
 | `KARIZ_WS_HOST` | ws/wss | Host header (and TLS name on the dialer). Set it to your hostname |
+| `XUI_ENABLE` | no | `true` (default) runs the 3x-ui panel. `false` turns it off, and the tunnel becomes the only process (the container exits with an error if no tunnel is configured too) |
 | `KARIZ_PROFILE` | no | `balanced` (default), `ultraspeed`, `gaming` |
 
 Who listens depends on the mode:

@@ -26,6 +26,7 @@ Nothing starts until `BACKPACK_ROLE` is set.
 | `BACKPACK_TRANSPORT` | no | Default `tcp`. Must match on both ends. Others: `tcpmux`, `ws`, `wsmux`, `wss`, `wssmux`, `stealth`, `pck`, `kcp`, `quic`, `udp`, `xdi` |
 | `BACKPACK_BIND` | server | Tunnel listen address. Default `0.0.0.0:8443` |
 | `BACKPACK_PORTS` | server | Public ports to expose: `443,8080=127.0.0.1:2096`. `443` means the client hands it to its own `127.0.0.1:443`; `A=host:B` sends it to `host:B` |
+| `XUI_ENABLE` | no | `true` (default) runs the 3x-ui panel. `false` turns it off, and the tunnel becomes the only process (the container exits with an error if no tunnel is configured too) |
 | `BACKPACK_REMOTE` | client | Server address, `IP:port`. The port must match the server's `BACKPACK_BIND` |
 
 For anything else (fallback transports, TLS certificates, tuning, UDP forwarding, `wss`

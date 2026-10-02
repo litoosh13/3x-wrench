@@ -19,6 +19,7 @@ Tags: `latest` (newest `main`), `vX.Y.Z` (git tag), `sha-abc1234` (pin for repro
 | Panel | port `2053`, login `admin` / `admin` (change it) |
 | Volume | `/etc/x-ui` holds the panel database. Without it every redeploy resets the panel |
 | Tunnel/spoofer | Starts only when its role/`CONNECT` variable is set. Leave it unset for a plain panel |
+| Panel off | `XUI_ENABLE=false` runs the tunnel/spoofer alone, no panel (default `true`) |
 | Override | A script at `/data/entrypoint.sh` replaces the built-in start-up |
 | Needs | Root. `NET_RAW` for the spoofer (Docker default). Raw TCP ports for inbounds |
 
