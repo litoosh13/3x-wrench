@@ -28,6 +28,8 @@ Nothing starts until `KARIZ_ROLE` is set.
 | `KARIZ_LISTEN` | one of | The side that **listens** sets this, e.g. `0.0.0.0:3080` |
 | `KARIZ_REMOTE` | one of | The side that **dials** sets this, e.g. `203.0.113.5:3080` |
 | `KARIZ_FORWARD` | entry only | `443=127.0.0.1:443,8080=127.0.0.1:80`: public port on the entry `=` target dialled from the exit. A bare port listens on `0.0.0.0` |
+| `KARIZ_WS_PATH` | ws/wss | WebSocket path, e.g. `/api/v1/stream`. Must match on both sides |
+| `KARIZ_WS_HOST` | ws/wss | Host header (and TLS name on the dialer). Set it to your hostname |
 | `KARIZ_PROFILE` | no | `balanced` (default), `ultraspeed`, `gaming` |
 
 Who listens depends on the mode:
@@ -78,6 +80,50 @@ KARIZ_REMOTE=<entry public host>:<entry tunnel port>
 
 Users hit `entry:443`, which arrives at `127.0.0.1:443` on the exit.
 
+## Behind the platform's HTTPS hostname
+
+Many platforms give the container a hostname like `tunnel.example.com` and map it to one
+container port. The platform terminates TLS and passes **plain HTTP** to the container.
+WebSocket is HTTP, so the tunnel can ride it, and the container (the Iran side) never
+needs a raw TCP port for the tunnel.
+
+Iran container (`entry`; map the hostname to port `8080` in the platform):
+
+```
+KARIZ_ROLE=entry
+KARIZ_TOKEN=<token>
+KARIZ_TRANSPORT=ws
+KARIZ_LISTEN=0.0.0.0:8080
+KARIZ_WS_PATH=/api/v1/stream
+KARIZ_WS_HOST=tunnel.example.com
+KARIZ_FORWARD=2087=127.0.0.1:1004
+```
+
+Abroad VPS (`exit`), which dials the hostname over `wss`:
+
+```toml
+role = "exit"
+mode = "reverse"
+
+[tunnel]
+transport = "wss"
+remote = "tunnel.example.com:443"
+token = "<same token>"
+
+[tunnel.ws]
+path = "/api/v1/stream"
+host = "tunnel.example.com"
+```
+
+Notes:
+- The container side is plain `ws`; only the dialing side says `wss`. That is intended.
+- A hostname maps to **one** container port. Point it at the tunnel port; it then no
+  longer reaches the panel.
+- The hostname carries HTTP only. The forwarded user port (`2087`) still needs its own
+  raw TCP mapping.
+- Mux stays on (the default), because its pings stop the edge cutting the connection as
+  idle. Keep `keepalive` at or below ~90 s.
+
 ## Check it
 
 Container logs should show `mux session ... established`. Or in the container:
@@ -91,5 +137,6 @@ on the exit isn't listening.
 
 ## Tested
 
-Entry ↔ exit with `reverse` + `tcpmux`, traffic through a forwarded port confirmed.
-Other transports and `direct` use the same code path but were not exercised.
+Entry ↔ exit with `reverse` + `tcpmux`, and with `ws` behind a TLS-terminating nginx
+(exit dialling `wss`), traffic through a forwarded port confirmed. Other transports,
+`direct`, and a real platform edge were not exercised.

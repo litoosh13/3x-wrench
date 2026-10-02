@@ -99,6 +99,43 @@ Also check on the abroad VPS that the inbound listens on `0.0.0.0` or `127.0.0.1
 
 **Don't** use the abroad VPS's own IP in the client link: that skips the tunnel.
 
+## Behind the platform's HTTPS hostname
+
+If the platform gives the container a hostname like `tunnel.example.com` mapped to one
+container port (TLS terminated at its edge, plain HTTP inside), the tunnel can ride it
+over WebSocket. Tested with nginx standing in for the edge.
+
+Iran container (`server`; map the hostname to port `8080`):
+
+```
+BACKPACK_ROLE=server
+BACKPACK_TOKEN=<secret>
+BACKPACK_TRANSPORT=ws
+BACKPACK_BIND=0.0.0.0:8080
+BACKPACK_PORTS=2087=127.0.0.1:1004
+```
+
+Abroad VPS (`client`): dial the hostname with `wss`. The wizard may insist both ends use
+the same transport, so edit the generated file (under `/etc/backpack/`) and restart its
+`backpack-<name>` service:
+
+```toml
+[client]
+transport = "wss"
+remote_addr = "tunnel.example.com:443"
+token = "<same secret>"
+simple_auth = true
+```
+
+`wss` on the dialer is the TLS to the edge; the container still speaks plain `ws`.
+`simple_auth` is needed because the edge terminates TLS, which breaks the session-bound
+proof; it sends the raw token to the edge, so only use an edge you trust.
+
+The hostname maps to **one** port, so it stops reaching the panel. The forwarded user
+port (`2087`) still needs its own raw TCP mapping. If you'd rather not trust the edge
+with the token, use [Kariz](xui-kariz.md#behind-the-platforms-https-hostname), whose
+traffic stays encrypted end to end.
+
 ## Check it
 
 Client log: `control channel established successfully`. Server log:
@@ -114,5 +151,6 @@ in a container; everything is set through the variables above.
 
 ## Tested
 
-Server ↔ client with `tcp`, traffic through a forwarded port confirmed. Other transports
-were not exercised.
+Server ↔ client with `tcp`, and with `ws` behind a TLS-terminating nginx (client dialling
+`wss` with `simple_auth`), traffic through a forwarded port confirmed. Other transports
+and a real platform edge were not exercised.
