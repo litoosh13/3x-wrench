@@ -99,42 +99,79 @@ Also check on the abroad VPS that the inbound listens on `0.0.0.0` or `127.0.0.1
 
 **Don't** use the abroad VPS's own IP in the client link: that skips the tunnel.
 
-## Behind the platform's HTTPS hostname
+## Behind a CDN or the platform's HTTPS hostname
 
-If the platform gives the container a hostname like `tunnel.example.com` mapped to one
-container port (TLS terminated at its edge, plain HTTP inside), the tunnel can ride it
-over WebSocket. Tested with nginx standing in for the edge.
+Use this when users or the abroad server can't reach the container on a raw TCP port, but
+the platform (or a CDN such as Cloudflare) gives it an HTTPS hostname like
+`tunnel.example.com`. The edge terminates TLS and passes **plain HTTP** to one container
+port, and WebSocket is HTTP, so the tunnel can ride it. Tested with nginx standing in for
+the edge.
 
-Iran container (`server`; map the hostname to port `8080`):
+```
+abroad VPS --wss/443--> edge (TLS ends here) --plain ws--> Iran container :8080
+```
+
+**The two ends use different transports. This is intended:**
+
+| Side | `transport` | Why |
+|---|---|---|
+| Iran container (`server`) | `ws` | The edge already removed the TLS, so the container sees plain HTTP |
+| Abroad VPS (`client`) | `wss` + `simple_auth = true` | It needs TLS to reach the edge on 443 |
+
+`simple_auth` is needed because the edge terminates TLS, which breaks BackPack's
+session-bound proof. It sends the raw token to the edge, so use a long random token
+(`openssl rand -hex 24`) and only an edge you trust. Where that matters, use
+[Kariz](xui-kariz.md#behind-the-platforms-https-hostname), whose traffic stays encrypted
+end to end.
+
+**Iran container** (map the hostname to container port `8080` in the platform):
 
 ```
 BACKPACK_ROLE=server
-BACKPACK_TOKEN=<secret>
+BACKPACK_TOKEN=<long random secret>
 BACKPACK_TRANSPORT=ws
 BACKPACK_BIND=0.0.0.0:8080
 BACKPACK_PORTS=2087=127.0.0.1:1004
 ```
 
-Abroad VPS (`client`): dial the hostname with `wss`. The wizard may insist both ends use
-the same transport, so edit the generated file (under `/etc/backpack/`) and restart its
-`backpack-<name>` service:
+**Abroad VPS** (`client`). The setup wizard may insist both ends use the same transport,
+so edit the generated file under `/etc/backpack/` and restart. The file says not to edit
+it while the service runs, so stop it first:
+
+```bash
+systemctl stop backpack-<name>
+nano /etc/backpack/<name>.toml
+systemctl start backpack-<name>
+journalctl -u backpack-<name> -f
+```
 
 ```toml
 [client]
-transport = "wss"
 remote_addr = "tunnel.example.com:443"
-token = "<same secret>"
+transport = "wss"
 simple_auth = true
+token = "<same long random secret>"
+# edge_ip = "198.51.100.7"   # optional: dial this edge/CDN IP, still using the hostname
 ```
 
-`wss` on the dialer is the TLS to the edge; the container still speaks plain `ws`.
-`simple_auth` is needed because the edge terminates TLS, which breaks the session-bound
-proof; it sends the raw token to the edge, so only use an edge you trust.
+`edge_ip` makes the client connect to a specific edge IP while still sending the hostname
+for TLS and routing. Use it when the hostname's own DNS answer is blocked or you want a
+clean CDN address. For Cloudflare the port must be one it proxies (443, 2053, 2083, 2087,
+2096, 8443) and the record must be proxied.
 
-The hostname maps to **one** port, so it stops reaching the panel. The forwarded user
-port (`2087`) still needs its own raw TCP mapping. If you'd rather not trust the edge
-with the token, use [Kariz](xui-kariz.md#behind-the-platforms-https-hostname), whose
-traffic stays encrypted end to end.
+**What goes wrong**
+
+| Symptom | Cause |
+|---|---|
+| Client never connects, edge answers `400` | Client set to `ws` on port 443: plain WebSocket to a TLS port. Use `wss` |
+| `wss` set on the Iran container | The container expects TLS that the edge already removed. Use `ws` there |
+| Token rejected through the edge | `simple_auth = true` missing on the client |
+| Tunnel connects, user port fails | The user port needs its own raw TCP mapping; the hostname carries HTTP only and reaches one container port |
+| Panel stopped answering on the hostname | A hostname maps to one port. Mapped to the tunnel, it no longer reaches the panel |
+| Drops every minute or two | The edge cuts idle connections. Keep `keepalive_period` low (e.g. `30`) |
+
+Success looks like: client `control channel established successfully` then
+`transport wss is up`; server `control channel established successfully`.
 
 ## Check it
 
