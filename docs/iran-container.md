@@ -203,9 +203,11 @@ Shadowsocks poorly. Kariz v2.0.0: the tunnel connected and the abroad-side to in
 returned the inbound's reply, but `tcpmux` dropped after ~90 s ("mux peer stopped answering pings"),
 and Shadowsocks over it never connected in testing (cause not found).
 
+Also confirmed on the real platform (ip-or-hostname.md section 5): Shadowsocks (TCP), WireGuard and Reality xhttp through raw
+ports next to the hostname setup, i.e. the whole six-step clean setup.
+
 Not tested on the real platform: `kcp`/`quic`, several paths at once (ip-or-hostname.md section 3b),
-long idle periods on the edge, Reality through the raw-port way, Shadowsocks and WireGuard through the
-nginx setup, Kariz's own web panel (not in the image).
+long idle periods on the edge, Shadowsocks UDP, Kariz's own web panel (not in the image).
 
 ## 8. Open problems (so nobody re-derives them)
 

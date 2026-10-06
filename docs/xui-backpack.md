@@ -461,7 +461,8 @@ HTTP/2; check from the abroad VPS with
 vless://11111111-2222-3333-4444-555555555555@203.0.113.10:30003?type=tcp&security=reality&sni=tunnel.example.com&fp=chrome&pbk=DUMMY_PUBLIC_KEY&sid=ab12cd34&flow=xtls-rprx-vision&encryption=none#reality-via-container
 ```
 
-**Tested locally**: a Reality client connected through the container's raw port and
+**Confirmed on a real platform** (Reality over xhttp, through the container's raw TCP port, next to the
+hostname setup). **Also tested locally**: a Reality client connected through the container's raw port and
 loaded a page and an 8 MB file, and a plain TLS client on that same port received the
 destination site's page instead of anything from xray.
 
