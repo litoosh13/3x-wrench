@@ -11,7 +11,7 @@ connection to the service behind it. You run one container per side.
 
 | Mount path | Holds |
 |---|---|
-| `/etc/x-ui` | Panel database. Add it, or every redeploy resets to `admin`/`admin` |
+| `/etc/x-ui` | Panel database (only matters with `XUI_ENABLE=true`). Without it every redeploy resets to `admin`/`admin` |
 
 The tunnel config is regenerated from env on every start, so it needs no volume.
 
@@ -26,8 +26,12 @@ Nothing starts until `BACKPACK_ROLE` is set.
 | `BACKPACK_TRANSPORT` | no | Default `tcp`. Must match on both ends. Others: `tcpmux`, `ws`, `wsmux`, `wss`, `wssmux`, `stealth`, `pck`, `kcp`, `quic`, `udp`, `xdi` |
 | `BACKPACK_BIND` | server | Tunnel listen address. Default `0.0.0.0:8443` |
 | `BACKPACK_PORTS` | server | Public ports to expose: `443,8080=127.0.0.1:2096`. `443` means the client hands it to its own `127.0.0.1:443`; `A=host:B` sends it to `host:B` |
-| `XUI_ENABLE` | no | `true` (default) runs the 3x-ui panel. `false` turns it off, and the tunnel becomes the only process (the container exits with an error if no tunnel is configured too) |
+| `XUI_ENABLE` | no | **Default `false`: the panel is OFF.** `true` also starts the 3x-ui panel (port `2053`). With the panel off and nothing else enabled, the container exits with an error instead of idling |
 | `BACKPACK_ACCEPT_UDP` | server | `true` also carries **UDP** on the exposed ports, over the tunnel (even a TCP transport). Default off. See below |
+| `NGINX_ENABLE` | no | **Default `false`.** `true` starts nginx, to serve several paths over the one port a platform hostname maps to. See "One hostname for everything" |
+| `NGINX_LISTEN` | no | nginx port, default `8000` (only used with `NGINX_ENABLE=true`) |
+| `NGINX_ROUTES` | with nginx | `path=upstream`, comma separated: `/channel=127.0.0.1:8080,/app/=127.0.0.1:2087` |
+| `NGINX_DEFAULT` | no | Upstream for `/` (e.g. the panel, `127.0.0.1:2053`). Unset means a plain `404` |
 | `BACKPACK_REMOTE` | client | Server address, `IP:port`. The port must match the server's `BACKPACK_BIND` |
 
 For anything else (fallback transports, TLS certificates, tuning, UDP forwarding, `wss`
@@ -45,7 +49,7 @@ on a filtered link.
 
 | Port | Where | Protocol |
 |---|---|---|
-| `2053` | both | TCP: panel |
+| `2053` | both | TCP: panel (only with `XUI_ENABLE=true`) |
 | `BACKPACK_BIND` port (`8443`) | server | TCP (UDP for kcp/quic/udp). The client dials this |
 | Each public port in `BACKPACK_PORTS` | server | TCP, **raw TCP**, not HTTP-only ingress |
 
@@ -341,6 +345,129 @@ ends TLS. gRPC usually fails too, as the edge speaks HTTP/1.1 to the container.
 - Built from parts tested separately (edge to container, and the tunnel to its target);
   the whole chain was not run together.
 
+## One hostname for everything (nginx, tested)
+
+A platform hostname maps to **one** container port, but one port can serve several paths.
+With `NGINX_ENABLE=true`, nginx runs in the container and routes by path, so the abroad
+server's tunnel **and** your users both use the same HTTPS hostname. No raw TCP port is
+needed at all.
+
+```
+users   --TLS/443--> edge --plain HTTP--> nginx :8000 --/app/--> BackPack forward --tunnel--> abroad inbound
+abroad  --wss/443--> edge --plain HTTP--> nginx :8000 --/channel, /tunnel/--> BackPack ws server
+```
+
+BackPack's WebSocket transport uses **two** paths: `/channel` for the control channel and
+`/tunnel/<id>` for the data connections. Both must be routed, or the client fails with
+`websocket: bad handshake`.
+
+**Iran container** (map `tunnel.example.com` to container port `8000`):
+
+```
+BACKPACK_ROLE=server
+BACKPACK_TOKEN=4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36
+BACKPACK_TRANSPORT=ws
+BACKPACK_BIND=127.0.0.1:8080
+BACKPACK_PORTS=2087=127.0.0.1:1004,2088=127.0.0.1:1006
+NGINX_ENABLE=true
+NGINX_LISTEN=8000
+NGINX_ROUTES=/channel=127.0.0.1:8080,/tunnel/=127.0.0.1:8080,/app/=127.0.0.1:2087,/x/=127.0.0.1:2088
+```
+
+`BACKPACK_BIND` is on `127.0.0.1` because only nginx talks to it. `/app/` goes to a VLESS-WS
+inbound (abroad port `1004`) and `/x/` to a VLESS-xhttp inbound (abroad port `1006`).
+
+**Abroad VPS** `/etc/backpack/mytunnel.toml` (stop the service first, restart after):
+
+```toml
+[client]
+remote_addr = "tunnel.example.com:443"
+transport = "wss"
+simple_auth = true
+token = "4f9d2a7c18e35b60a1d4c7e92f0b83d65a1c9e47b20f8d36"
+```
+
+**Abroad inbounds** (3x-ui or raw Xray), both **security none**, because TLS ends at the edge:
+
+```json
+{ "port": 1004, "listen": "0.0.0.0", "protocol": "vless",
+  "settings": { "clients": [{ "id": "11111111-2222-3333-4444-555555555555" }], "decryption": "none" },
+  "streamSettings": { "network": "ws", "security": "none", "wsSettings": { "path": "/app/" } } }
+```
+```json
+{ "port": 1006, "listen": "0.0.0.0", "protocol": "vless",
+  "settings": { "clients": [{ "id": "11111111-2222-3333-4444-555555555555" }], "decryption": "none" },
+  "streamSettings": { "network": "xhttp", "security": "none", "xhttpSettings": { "path": "/x/", "mode": "packet-up" } } }
+```
+
+**Client links** (the address is the hostname and the port is `443`):
+
+```
+vless://11111111-2222-3333-4444-555555555555@tunnel.example.com:443?type=ws&security=tls&sni=tunnel.example.com&host=tunnel.example.com&path=%2Fapp%2F&encryption=none#ws-via-hostname
+vless://11111111-2222-3333-4444-555555555555@tunnel.example.com:443?type=xhttp&security=tls&sni=tunnel.example.com&host=tunnel.example.com&path=%2Fx%2F&mode=packet-up&encryption=none#xhttp-via-hostname
+```
+
+Notes:
+- Use `mode=packet-up` for xhttp. The edge speaks HTTP/1.1 to the container, so the modes
+  that need HTTP/2 are not safe here.
+- The nginx proxy is unbuffered with 1-day timeouts, so WebSocket and long xhttp streams
+  are not cut. `NGINX_DEFAULT=127.0.0.1:2053` sends `/` to the panel instead of a `404`.
+- The edge sees user traffic and the tunnel token (`simple_auth`). Where that matters, use
+  [Kariz](xui-kariz.md).
+
+**Tested locally** with nginx standing in for the edge: the tunnel came up over the
+hostname, and VLESS-WS and VLESS-xhttp (`packet-up`) both returned a page and an 8 MB
+download through it.
+
+## Reality with the hostname as the SNI (tested)
+
+Reality needs a raw TLS handshake all the way to the abroad inbound, and the edge ends TLS,
+so Reality **cannot** use the hostname as its address. What works is using the hostname as
+the **camouflage name** and connecting to the container's **raw IP and port**, which
+BackPack forwards to the abroad Reality inbound.
+
+```
+client --raw TCP to 203.0.113.10:30003, SNI = tunnel.example.com--> Iran container :2090 --tunnel--> abroad Reality inbound :1005
+```
+
+**Iran container**: add a forward for Reality. This is plain TCP, no nginx involved:
+
+```
+BACKPACK_PORTS=2090=127.0.0.1:1005
+```
+
+On the platform, map container port `2090` as TCP (e.g. external `30003`).
+
+**Abroad Reality inbound.** `dest` is the hostname itself, so a probe is shown the platform's
+real site:
+
+```json
+{ "port": 1005, "listen": "0.0.0.0", "protocol": "vless",
+  "settings": { "clients": [{ "id": "11111111-2222-3333-4444-555555555555", "flow": "xtls-rprx-vision" }], "decryption": "none" },
+  "streamSettings": { "network": "tcp", "security": "reality",
+    "realitySettings": { "dest": "tunnel.example.com:443", "xver": 0,
+      "serverNames": ["tunnel.example.com"],
+      "privateKey": "DUMMY_PRIVATE_KEY_FROM_xray_x25519",
+      "shortIds": ["ab12cd34"] } } }
+```
+
+Generate your own keys with `xray x25519`. The hostname's server must offer TLS 1.3 and
+HTTP/2; check from the abroad VPS with
+`openssl s_client -connect tunnel.example.com:443 -tls1_3 -alpn h2`.
+
+**Client link** (address = the container's raw IP and external port, `sni` = the hostname):
+
+```
+vless://11111111-2222-3333-4444-555555555555@203.0.113.10:30003?type=tcp&security=reality&sni=tunnel.example.com&fp=chrome&pbk=DUMMY_PUBLIC_KEY&sid=ab12cd34&flow=xtls-rprx-vision&encryption=none#reality-via-container
+```
+
+**Tested locally**: a Reality client connected through the container's raw port and
+loaded a page and an 8 MB file, and a plain TLS client on that same port received the
+destination site's page instead of anything from xray.
+
+The catch is that this entry is the raw IP and port, which some networks block. If yours
+does, use the hostname examples above instead; Reality isn't possible there.
+
 ## Check it
 
 Client log: `control channel established successfully`. Server log:
@@ -356,6 +483,6 @@ in a container; everything is set through the variables above.
 
 ## Tested
 
-Server ↔ client with `tcp`, with `stealth` (a wrong token gets no reply), with `BACKPACK_ACCEPT_UDP=true` (UDP datagram crossed a `tcp` tunnel, and was not carried with it off), and with `ws` behind a TLS-terminating nginx (client dialling
+Server ↔ client with `tcp`, with `stealth` (a wrong token gets no reply), with `BACKPACK_ACCEPT_UDP=true` (UDP datagram crossed a `tcp` tunnel, and was not carried with it off), and with the nginx path routing (WS and xhttp over one hostname, Reality over the raw port), and with `ws` behind a TLS-terminating nginx (client dialling
 `wss` with `simple_auth`), traffic through a forwarded port confirmed. Other transports
 and a real platform edge were not exercised.

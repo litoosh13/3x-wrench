@@ -11,7 +11,7 @@ container per side.
 
 | Mount path | Holds |
 |---|---|
-| `/etc/x-ui` | Panel database. Add it, or every redeploy resets to `admin`/`admin` |
+| `/etc/x-ui` | Panel database (only matters with `XUI_ENABLE=true`). Without it every redeploy resets to `admin`/`admin` |
 
 The tunnel config is regenerated from env on every start, so it needs no volume.
 
@@ -30,7 +30,7 @@ Nothing starts until `KARIZ_ROLE` is set.
 | `KARIZ_FORWARD` | entry only | `443=127.0.0.1:443,8080=127.0.0.1:80`: public port on the entry `=` target dialled from the exit. A bare port listens on `0.0.0.0` |
 | `KARIZ_WS_PATH` | ws/wss | WebSocket path, e.g. `/api/v1/stream`. Must match on both sides |
 | `KARIZ_WS_HOST` | ws/wss | Host header (and TLS name on the dialer). Set it to your hostname |
-| `XUI_ENABLE` | no | `true` (default) runs the 3x-ui panel. `false` turns it off, and the tunnel becomes the only process (the container exits with an error if no tunnel is configured too) |
+| `XUI_ENABLE` | no | **Default `false`: the panel is OFF.** `true` also starts the 3x-ui panel (port `2053`). With the panel off and nothing else enabled, the container exits with an error instead of idling |
 | `KARIZ_PROFILE` | no | `balanced` (default), `ultraspeed`, `gaming` |
 
 Who listens depends on the mode:
@@ -54,7 +54,7 @@ For anything the variables don't cover, put a complete config at `/data/kariz.to
 
 | Port | Where | Protocol |
 |---|---|---|
-| `2053` | both | TCP: panel |
+| `2053` | both | TCP: panel (only with `XUI_ENABLE=true`) |
 | The tunnel port (`3080` in the examples) | whichever side **listens** | TCP (UDP for kcp/quic/udp) |
 | Each public port in `KARIZ_FORWARD` | entry | TCP, **raw TCP**, not HTTP-only ingress |
 

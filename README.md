@@ -10,6 +10,9 @@ built for container platforms (PaaS) that give you a single container. `linux/am
 | `ghcr.io/litoosh13/xui-backpack` | [BackPack](https://github.com/AminMGMT/BackPack): Iran ⇄ abroad reverse tunnel | [docs/xui-backpack.md](docs/xui-backpack.md) |
 | `ghcr.io/litoosh13/xui-kariz` | [Kariz](https://github.com/Erfan-XRay/Kariz): encrypted entry/exit tunnel | [docs/xui-kariz.md](docs/xui-kariz.md) |
 
+**New here, or starting a new chat? Read [docs/iran-container.md](docs/iran-container.md) first:** how the
+container works, every variable, dummy recipes, platform facts, what is tested and what isn't.
+
 Tags: `latest` (newest `main`), `vX.Y.Z` (git tag), `sha-abc1234` (pin for reproducible deploys).
 
 ## Same in all three
@@ -18,8 +21,9 @@ Tags: `latest` (newest `main`), `vX.Y.Z` (git tag), `sha-abc1234` (pin for repro
 |---|---|
 | Panel | port `2053`, login `admin` / `admin` (change it) |
 | Volume | `/etc/x-ui` holds the panel database. Without it every redeploy resets the panel |
-| Tunnel/spoofer | Starts only when its role/`CONNECT` variable is set. Leave it unset for a plain panel |
-| Panel off | `XUI_ENABLE=false` runs the tunnel/spoofer alone, no panel (default `true`) |
+| Tunnel/spoofer | Starts only when its role/`CONNECT` variable is set |
+| Panel | `xui-backpack` and `xui-kariz`: **off** unless `XUI_ENABLE=true`. `xui-spoof`: on unless `XUI_ENABLE=false` |
+| nginx | `xui-backpack` only: starts only with `NGINX_ENABLE=true` |
 | Override | A script at `/data/entrypoint.sh` replaces the built-in start-up |
 | Needs | Root. `NET_RAW` for the spoofer (Docker default). Raw TCP ports for inbounds |
 
@@ -39,7 +43,7 @@ docker run -d --name xui --cap-add=NET_RAW \
   ghcr.io/litoosh13/xui-kariz:latest
 ```
 
-Panel on `:2053` (`admin` / `admin`, change it). The matching abroad side and the same
+The panel is off by default in this image; add `-e XUI_ENABLE=true` to also run it on `:2053` (`admin` / `admin`, change it). The matching abroad side and the same
 example for BackPack and the spoofer are in each image's guide above.
 
 ## Building
