@@ -4,6 +4,9 @@ A hand-off page: someone (or a new chat) who reads only this should understand w
 container is, what you can do with it, how each feature is switched on, and what is and
 is not proven. Every address, port and secret below is a **dummy**.
 
+**Choosing how users reach it (IP vs hostname, what breaks with Reality):
+[ip-or-hostname.md](ip-or-hostname.md).**
+
 Detailed per-image guides: [xui-backpack.md](xui-backpack.md), [xui-kariz.md](xui-kariz.md),
 [../DEPLOY.md](../DEPLOY.md) (the SNI-spoofer image).
 
@@ -190,14 +193,19 @@ BackPack `tcp`, `stealth`, `ws`/`wss`+`simple_auth` through an edge, UDP over a 
 nginx path routing with VLESS-WS, VLESS-xhttp (`packet-up`) and Reality (via raw port), 8 MB transfers;
 Kariz `tcpmux` and `ws` behind an edge (v1.4.0), the opt-in `XUI_ENABLE` / `NGINX_ENABLE` switches.
 
-Reported from the real platform (by the operator, not re-verified here): a BackPack TCP tunnel to the
-abroad VPS carried WireGuard fine, VLESS-xhttp only sometimes, and Shadowsocks poorly; the
-hostname/nginx setups were not yet confirmed on the real edge. Kariz v2.0.0: the tunnel connected and the abroad-side to inbound path
+Verified on the real platform: a BackPack `ws` tunnel over the platform hostname (abroad VPS dialling `wss`
+with `simple_auth`), and a VLESS **xhttp** inbound (path `/`, security none) carrying real traffic through
+nginx and the tunnel; Instagram loaded well. Findings: the link's `alpn` must include `h2` (HTTP/1.1 only
+failed), the inbound's path must equal the link's path, and the hostname must be mapped to nginx's port
+`8000`. Details and failure table: [ip-or-hostname.md](ip-or-hostname.md). Also reported by the operator
+(not re-verified here): over a plain BackPack TCP tunnel WireGuard worked fine, VLESS-xhttp only sometimes,
+Shadowsocks poorly. Kariz v2.0.0: the tunnel connected and the abroad-side to inbound path
 returned the inbound's reply, but `tcpmux` dropped after ~90 s ("mux peer stopped answering pings"),
 and Shadowsocks over it never connected in testing (cause not found).
 
-Not tested: `kcp`/`quic` through the real platform, nginx routing on the real edge (idle timeouts,
-xhttp behaviour), Kariz's own web panel (not in the image).
+Not tested on the real platform: `kcp`/`quic`, several paths at once (ip-or-hostname.md section 3b),
+long idle periods on the edge, Reality through the raw-port way, Shadowsocks and WireGuard through the
+nginx setup, Kariz's own web panel (not in the image).
 
 ## 8. Open problems (so nobody re-derives them)
 
